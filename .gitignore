@@ -25,3 +25,4 @@ htmlcov/
 .idea/
 .vscode/*
 !.vscode/launch.json
+services/registry-service/registry.db
