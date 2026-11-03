@@ -133,3 +133,41 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **AI reported:** `SELECT 1` never touches a table, so /health stayed 200 while the DB was locked.
 - **I decided:** `SELECT 1 FROM farms LIMIT 1`.
 - **Why:** /health should answer "can the service work with its data", not just "can it open a connection". It now catches a missing file, a lock and missing tables. Cost: during a lock /health waits up to 5s before answering; acceptable, since it only happens when something is really wrong. LIMIT 1 keeps it fast.
+
+## Step 7 – Tests
+
+### 25. Test DB isolation
+- **AI suggested:** three options: the real DB, one shared test DB, or a fresh DB per test.
+- **I decided:** a fresh DB per test, built from a template (the seed is built once per session, then copied per test). Patch `db.DB_PATH` instead of overriding `get_db`.
+- **Why:** full isolation and fast. Patching DB_PATH keeps the real get_db (mode=rw, timeout=5, foreign_keys) in the tests; overriding get_db would skip it.
+- **Research:** the consensus is no shared state between tests; shared DB state causes flaky tests that pass alone and fail together. Common methods: transaction rollback (fastest in general; one source measured ~5s vs ~60s for 100 tests compared with recreating the schema), truncating tables, or a new DB per test (cheap with SQLite, a file copy). Rollback does not fit here: db.py commits on every write, and the 503 test needs a missing file. Real SQLite projects use "build a template once, copy per test" (Microsoft PyRIT; codeframe measured ~1.3s to build vs ~0.1ms to copy; pytest-postgresql and pytest-mock-resources use template databases too). FastAPI's docs recommend dependency_overrides on get_db.
+
+### 26. Test scope
+- **Research:** error paths matter as much as happy paths; check the body and headers, not only status codes; a second DELETE should return 404, not 500; a 500 on bad input is a bug; test the contract, not the implementation.
+- **I decided:** cover every case in the explicit list (the Postman cases plus a few more), and every judgment-log decision gets a test that proves it. Not every possible edge case: the task asks for a small model.
+
+### 27. Controlling time in tests
+- **Problem:** a fixed future date (e.g. 2027-01-01) becomes a past date in 2027 and the test breaks. The Japan case can only be tested by controlling the clock.
+- **Research:** freezegun is the older library and has a long-open bug around time zones; a user in that issue recommended time-machine as faster and more solid. time-machine supports ZoneInfo time zones and ships a pytest plugin.
+- **I decided:** time-machine with tick=True, and every test runs at 2026-11-03 22:00 UTC.
+- **Why:** it proves decision 16: at 22:00 UTC a farmer in Tokyo (already Nov 4) is accepted, while London (still Nov 3) is rejected. tick=True keeps the clock moving so TestClient's internal timers never freeze.
+
+### 28. Locked-DB test skipped
+- **Why:** it needs a real 5s wait; the lock -> 503 path was verified manually in step 6.
+
+### 29. Test safety
+- **I decided:** the seed script is copied and run in a temp dir, never in place, and the real registry.db mtime is checked before and after the run.
+- **Why:** running it in place could overwrite the real DB.
+- **Result:** mtime unchanged.
+
+### 30. Self-review of the test prompt
+- **I decided:** reviewed the prompt twice before sending it.
+- **Round 1 found:** Claude Code cannot see Postman (so I gave an explicit case list); a risk that the seed script overwrites the real DB; a possible DB_PATH import-time trap; a fully frozen clock could hang TestClient (so tick=True); pytest needed pythonpath.
+- **Round 2 found:** 4 missing cases (PATCH null, empty plot name, PATCH unknown plot, PATCH unknown farm).
+- **Why:** catching these before running is cheaper than debugging after.
+
+### 31. httpx -> httpx2 for the TestClient
+- **Problem:** the first run passed (63 tests) but showed StarletteDeprecationWarning: using httpx with starlette.testclient is deprecated, install httpx2.
+- **Research:** Starlette 1.2.0 (May 2026) moved its TestClient to httpx2. The old path still works with a warning, but becomes a hard error if warnings are escalated, and will be removed. Other projects fixed it the same way: add httpx2 to the test dependencies.
+- **I decided:** uv remove --dev httpx; uv add --dev httpx2. No code change: Starlette picks httpx2 automatically.
+- **Result:** 63 passed, no warnings.

@@ -27,3 +27,4 @@ Service: services/registry-service (FastAPI, main.py at service root, run: `uv r
 - DB opened with `mode=rw` (missing registry.db raises, never creates an empty DB) and `timeout=5` (lock wait).
 - 503 UNAVAILABLE "Database unavailable" + `Retry-After: 30` for `sqlite3.OperationalError` with `sqlite_errorname` starting with SQLITE_CANTOPEN / SQLITE_BUSY / SQLITE_LOCKED. Any other OperationalError -> 500 "Internal server error" (a bug, not retried).
 - `/health` runs `SELECT 1 FROM farms LIMIT 1` through `get_db`: 200 on success; DB failure -> 503 (lock/missing file), missing table -> 500.
+- Tests: `uv run pytest` (from services/registry-service). Each test gets a fresh DB copied from a template built by running a copy of `seed_registry.sh` in a temp dir; `db.DB_PATH` is patched, `get_db` is not overridden. Clock frozen at 2026-11-03 22:00 UTC (time-machine, tick=True). Skipped: locked-DB test (needs a real 5s wait).
