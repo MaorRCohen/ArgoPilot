@@ -20,3 +20,7 @@ Service: services/registry-service (FastAPI, main.py at service root, run: `uv r
 - Farm names are unique in code (`farm_name_taken`), not via a DB constraint, because the schema cannot change. PATCH renaming a farm to its own name is allowed.
 - PATCH uses `model_dump(exclude_unset=True)`: `{}` -> 422 "no fields to update"; `name` null or "" -> 422.
 - DELETE farm: 409 if it still has plots (count first); unknown id -> 404.
+- Request models (`RequestModel`) use `extra="forbid"`: unknown fields -> 422.
+- Plot `planting_date` must not be after the local date at the plot's lat/lon (`TimezoneFinder`, UTC fallback) -> 422.
+- Plot name is unique per farm: checked in code, plus a `UNIQUE(farm_id, name)` safety net that maps to 409.
+- Plot referenced ids (farm/crop/soil/emitter) that don't exist -> 422, not 404.
