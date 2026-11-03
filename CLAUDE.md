@@ -28,3 +28,12 @@ Service: services/registry-service (FastAPI, main.py at service root, run: `uv r
 - 503 UNAVAILABLE "Database unavailable" + `Retry-After: 30` for `sqlite3.OperationalError` with `sqlite_errorname` starting with SQLITE_CANTOPEN / SQLITE_BUSY / SQLITE_LOCKED. Any other OperationalError -> 500 "Internal server error" (a bug, not retried).
 - `/health` runs `SELECT 1 FROM farms LIMIT 1` through `get_db`: 200 on success; DB failure -> 503 (lock/missing file), missing table -> 500.
 - Tests: `uv run pytest` (from services/registry-service). Each test gets a fresh DB copied from a template built by running a copy of `seed_registry.sh` in a temp dir; `db.DB_PATH` is patched, `get_db` is not overridden. Clock frozen at 2026-11-03 22:00 UTC (time-machine, tick=True). Skipped: locked-DB test (needs a real 5s wait).
+- Threads: `get_connection` uses `check_same_thread=False`. FastAPI can run the dependency and the endpoint on different threads of one request; a connection is still never shared between requests (decision 3). Regression test: `tests/test_concurrency.py` (240 requests, 20 threads, one long-lived `TestClient` via a `with` block).
+
+## Performance (NFR-1.1)
+- Script: `perf/registry_load.js` (k6, open model: constant-arrival-rate). Thresholds: p95 <= 100 ms, 0 failed, 0 dropped iterations per measured scenario.
+- Run from services/registry-service:
+  1. `bash seed_registry.sh`
+  2. Start the server without `--reload`: `uv run uvicorn main:app --host 127.0.0.1 --port 8000`
+  3. `k6 run --quiet perf/registry_load.js 2>&1 | tee perf/results.txt`
+- `results.txt` is committed as evidence for the PR. `tee` hides k6's exit code, so read pass/fail from the ✓/✗ marks in the summary.

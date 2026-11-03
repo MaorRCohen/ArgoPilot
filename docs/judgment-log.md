@@ -171,3 +171,66 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **Research:** Starlette 1.2.0 (May 2026) moved its TestClient to httpx2. The old path still works with a warning, but becomes a hard error if warnings are escalated, and will be removed. Other projects fixed it the same way: add httpx2 to the test dependencies.
 - **I decided:** uv remove --dev httpx; uv add --dev httpx2. No code change: Starlette picks httpx2 automatically.
 - **Result:** 63 passed, no warnings.
+
+## Step 8 – Performance (NFR-1.1)
+
+### 32. Load-test tool
+- **Research:** most simple load tools wait for each response before sending the next ("closed model"). When the server stalls they stop sending, so slow periods are under-sampled and p95/p99 look better than reality. This is called coordinated omission (term from Gil Tene). The fix is an "open model": send at a fixed arrival rate regardless of responses, which is exactly what "at 10 rps" means. One published comparison of the same slowdown measured p95 67 ms with a closed model vs 1 s with an open model.
+- **Tools:** k6 (constant-arrival-rate executor = open model, built-in pass/fail thresholds, most documented). Vegeta (constant-rate CLI, simpler, no thresholds). Locust (usually recommended for Python teams, but has no arrival-rate mode, so it is the wrong fit for "at 10 rps"). wrk (last commit Dec 2023, closed model).
+- **AI suggested:** k6.
+- **I decided:** k6, installed system-wide via the official apt repo.
+- **Why:** it measures exactly what the requirement says, turns NFR-1.1 into an automatic pass/fail check, and it's a tool I'll keep using after the course.
+
+### 33. Duration and warm-up
+- **Research:** Grafana's k6 guide says baseline data comes from the steady-state stage and it should last at least 1 minute so metrics reflect consistent behaviour, not warm-up effects. Several sources recommend a short warm-up before measuring (caches, connections, startup). A Kafka benchmark discussion explained that a short run reports a worse p99 than a long run of the same system, only because startup latency pollutes it. 15–20+ minutes is suggested for heavy load tests, which is overkill for a local 10 rps target.
+- **AI suggested:** 10 s warm-up (not measured, separate scenario) + 2 min measured.
+- **I decided:** same.
+- **Why:** the first requests load Python modules, which is not normal work. 2 min = 1,200 samples per endpoint, double k6's minimum.
+
+### 34. Which endpoints, and "10 rps" per endpoint or total
+- **Research:** the requirement is ambiguous. k6 can set thresholds per tag/scenario, so a slow endpoint can't hide behind an average of all endpoints.
+- **Options:** 10 rps total spread over 4 endpoints (~2.5 rps each, too lenient); 10 rps each for farms/plots list + by-id in parallel (40 rps); or all 10 GET endpoints (100 rps; catalogues use the same list_rows/get_row helpers).
+- **AI suggested:** 10 rps per endpoint for the 4 farm/plot endpoints, in parallel.
+- **I decided:** same.
+- **Why:** the stricter reading. If each endpoint meets 100 ms while all run together, it surely meets it at 10 rps alone.
+- **Open question for Alon:** which reading did Alon intend?
+
+### 35. dropped_iterations must be 0
+- **Research:** with an arrival-rate executor, if k6 can't start an iteration on time it drops it. The reported percentiles then exclude the dropped requests.
+- **I decided:** a threshold `dropped_iterations count==0` per scenario, verified first with a throwaway script (one arrival-rate scenario, empty iteration, no HTTP).
+- **Result:** the threshold passed (`✓ 'count==0' count=0`). k6 reports the counter as 0 for the scenario, so an empty sub-metric is not a threshold error.
+- **Why:** otherwise a "passing" p95 could be missing exactly the slowest moments.
+
+### 36. Measurement limits
+- **Limit:** k6 and the server run on the same laptop (WSL2), with one uvicorn worker and SQLite. Results show the service meets the target locally; they are not a production capacity number.
+- **Output:** the raw output is saved to `perf/results.txt` (run with `--quiet`, so it holds only the summary) for the PR. `tee` hides k6's exit code, so pass/fail is read from the ✓/✗ marks. That is fine for a manual run; CI would need `pipefail`.
+
+### 37. Self-review of the step 8 prompt (3 rounds)
+- **Round 1 found:** a threshold on a metric with no samples might error; the result must be saved for the PR (tee); the same-machine limitation must be stated; one research claim was worded stronger than its source.
+- **Round 2 found:** the prompt asked to verify k6's behaviour while forbidding any k6 run (fixed with a throwaway script with no HTTP); the progress bar would flood results.txt (fixed with `--quiet`).
+- **Round 3 found:** the throwaway script didn't specify the arrival-rate executor (dropped_iterations exists only there), and a sleep could cause real drops. Fixed by specifying the executor and an empty iteration.
+- **Why:** each round found fewer problems. The remaining check was running it (done in decision 35).
+
+### 38. Bug found by the load test: SQLite thread check
+- **Problem:** 73% of requests failed at 40 rps (3,597 of 4,903) with "SQLite objects created in a thread can only be used in that same thread" (main.py get_db -> conn.close()). Postman and the 63 tests missed it because they send one request at a time, so the same thread usually handles the whole request.
+- **Research:** FastAPI's official docs explain that SQLite by default lets only one thread talk to a connection, to prevent sharing one connection across different requests, but with normal def functions FastAPI can use more than one thread for the SAME request, so check_same_thread=False is needed. A FastAPI GitHub issue reports deadlocks when a dependency is combined with a small connection pool.
+- **Options:** check_same_thread=False (one line, the official recommendation); open/close the connection inside every endpoint (breaks decisions 3 and 6); make everything async (sqlite3 is blocking, one slow query would stall the whole server).
+- **AI suggested:** check_same_thread=False.
+- **I decided:** same.
+- **Why:** decision 3 gives a new connection per request, so a connection is never shared between requests; it only moves between threads inside one request, exactly the case the docs describe. The pool deadlock is not relevant now (no pool), but must be checked if we move to MySQL with a pool.
+
+### 39. Concurrency regression test
+- **Lesson:** the tests only sent one request at a time.
+- **I decided:** tests/test_concurrency.py fires 240 requests from 20 threads through one shared TestClient, using a `with TestClient(app)` block (one long-lived event loop and threadpool, like uvicorn). It counts both non-200 responses and raised exceptions, written red -> green: it was confirmed to FAIL before the fix and PASS after it.
+- **Why:** a test that passes before the fix proves nothing; this one guards against the bug coming back.
+
+### 40. Self-review of the bug-fix prompt
+- **Found:** TestClient re-raises server exceptions by default, so the test must count exceptions as failures (not only non-200); and all threads must share ONE TestClient, otherwise there may be no real concurrency.
+- **Why:** without these, the red step could fail for the wrong reason or not reproduce the bug at all.
+
+### 41. First attempt at the regression test did not reproduce the bug
+- **AI reported:** 240 and then 1000 concurrent requests through a bare `TestClient(app)` passed with 0 failures, so it stopped before fixing instead of claiming the bug was reproduced.
+- **Cause (hypothesis, then tested):** a bare TestClient gives each request its own short-lived event loop and threadpool, so the dependency and the endpoint run on the same thread; uvicorn has one long-lived loop and a shared pool.
+- **I decided:** use `with TestClient(app)` for this test only (one long-lived loop). Fallback if that also failed: a test against a real uvicorn.
+- **Result:** before the fix, 238 of 240 requests failed (all `ProgrammingError`, 2 returned 200). After the fix, the full suite passes (64 tests).
+- **Why:** a regression test is only useful if it is proven to fail without the fix.

@@ -6,7 +6,11 @@ DB_PATH = Path(__file__).parent / "registry.db"
 
 def get_connection() -> sqlite3.Connection:
     # mode=rw fails on a missing file instead of creating an empty DB; timeout is the lock wait.
-    conn = sqlite3.connect(f"file:{DB_PATH}?mode=rw", uri=True, timeout=5)
+    # check_same_thread=False: FastAPI may run the dependency and the endpoint on different threads
+    # of the same request. The connection is still never shared between requests.
+    conn = sqlite3.connect(
+        f"file:{DB_PATH}?mode=rw", uri=True, timeout=5, check_same_thread=False
+    )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn

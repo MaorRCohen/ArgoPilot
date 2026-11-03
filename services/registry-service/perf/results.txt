@@ -1,0 +1,80 @@
+
+
+  █ THRESHOLDS 
+
+    dropped_iterations{scenario:farm_by_id}
+    ✓ 'count==0' count=0
+
+    dropped_iterations{scenario:farms_list}
+    ✓ 'count==0' count=0
+
+    dropped_iterations{scenario:plot_by_id}
+    ✓ 'count==0' count=0
+
+    dropped_iterations{scenario:plots_list}
+    ✓ 'count==0' count=0
+
+    http_req_duration{scenario:farm_by_id}
+    ✓ 'p(95)<=100' p(95)=25.14ms
+
+    http_req_duration{scenario:farms_list}
+    ✓ 'p(95)<=100' p(95)=24.99ms
+
+    http_req_duration{scenario:plot_by_id}
+    ✓ 'p(95)<=100' p(95)=25.94ms
+
+    http_req_duration{scenario:plots_list}
+    ✓ 'p(95)<=100' p(95)=27.31ms
+
+    http_req_failed{scenario:farm_by_id}
+    ✓ 'rate==0' rate=0.00%
+
+    http_req_failed{scenario:farms_list}
+    ✓ 'rate==0' rate=0.00%
+
+    http_req_failed{scenario:plot_by_id}
+    ✓ 'rate==0' rate=0.00%
+
+    http_req_failed{scenario:plots_list}
+    ✓ 'rate==0' rate=0.00%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 4903    37.711385/s
+    checks_succeeded...: 100.00% 4903 out of 4903
+    checks_failed......: 0.00%   0 out of 4903
+
+    ✓ status is 200
+
+    HTTP
+    http_req_duration..............: avg=17.26ms min=4.09ms  med=16.56ms p(90)=23.23ms p(95)=25.84ms p(99)=35.7ms  max=66.57ms
+      { expected_response:true }...: avg=17.26ms min=4.09ms  med=16.56ms p(90)=23.23ms p(95)=25.84ms p(99)=35.7ms  max=66.57ms
+      { scenario:farm_by_id }......: avg=16.63ms min=8.49ms  med=15.87ms p(90)=21.99ms p(95)=25.14ms p(99)=33.66ms max=66.57ms
+      { scenario:farms_list }......: avg=16.81ms min=7.81ms  med=15.96ms p(90)=22.9ms  p(95)=24.99ms p(99)=35.71ms max=62.77ms
+      { scenario:plot_by_id }......: avg=17.77ms min=9.42ms  med=16.87ms p(90)=23.22ms p(95)=25.94ms p(99)=35.88ms max=56.09ms
+      { scenario:plots_list }......: avg=18.74ms min=10.33ms med=18.19ms p(90)=24.41ms p(95)=27.31ms p(99)=36.86ms max=56.23ms
+    http_req_failed................: 0.00%  0 out of 4903
+      { scenario:farm_by_id }......: 0.00%  0 out of 1201
+      { scenario:farms_list }......: 0.00%  0 out of 1201
+      { scenario:plot_by_id }......: 0.00%  0 out of 1200
+      { scenario:plots_list }......: 0.00%  0 out of 1200
+    http_reqs......................: 4903   37.711385/s
+
+    EXECUTION
+    dropped_iterations.............: 0      0/s
+      { scenario:farm_by_id }......: 0      0/s
+      { scenario:farms_list }......: 0      0/s
+      { scenario:plot_by_id }......: 0      0/s
+      { scenario:plots_list }......: 0      0/s
+    iteration_duration.............: avg=17.6ms  min=4.47ms  med=16.85ms p(90)=23.76ms p(95)=26.43ms p(99)=36.11ms max=66.87ms
+    iterations.....................: 4903   37.711385/s
+    vus............................: 0      min=0         max=0 
+    vus_max........................: 25     min=25        max=25
+
+    NETWORK
+    data_received..................: 2.7 MB 21 kB/s
+    data_sent......................: 473 kB 3.6 kB/s
+
+
+
