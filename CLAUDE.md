@@ -16,3 +16,7 @@ Service: services/registry-service (FastAPI, main.py at service root, run: `uv r
 - Schema comes from `seed_registry.sh` (do not change it). Reset data: `bash seed_registry.sh`.
 - `registry.db` is git-ignored.
 - Few files: main.py, db.py, models.py, errors.py (+ tests).
+- Farm ids are server-generated with `str(uuid.uuid4())`; the client sends only `name`.
+- Farm names are unique in code (`farm_name_taken`), not via a DB constraint, because the schema cannot change. PATCH renaming a farm to its own name is allowed.
+- PATCH uses `model_dump(exclude_unset=True)`: `{}` -> 422 "no fields to update"; `name` null or "" -> 422.
+- DELETE farm: 409 if it still has plots (count first); unknown id -> 404.
