@@ -24,3 +24,6 @@ Service: services/registry-service (FastAPI, main.py at service root, run: `uv r
 - Plot `planting_date` must not be after the local date at the plot's lat/lon (`TimezoneFinder`, UTC fallback) -> 422.
 - Plot name is unique per farm: checked in code, plus a `UNIQUE(farm_id, name)` safety net that maps to 409.
 - Plot referenced ids (farm/crop/soil/emitter) that don't exist -> 422, not 404.
+- DB opened with `mode=rw` (missing registry.db raises, never creates an empty DB) and `timeout=5` (lock wait).
+- 503 UNAVAILABLE "Database unavailable" + `Retry-After: 30` for `sqlite3.OperationalError` with `sqlite_errorname` starting with SQLITE_CANTOPEN / SQLITE_BUSY / SQLITE_LOCKED. Any other OperationalError -> 500 "Internal server error" (a bug, not retried).
+- `/health` runs `SELECT 1 FROM farms LIMIT 1` through `get_db`: 200 on success; DB failure -> 503 (lock/missing file), missing table -> 500.

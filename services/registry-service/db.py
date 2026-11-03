@@ -5,7 +5,8 @@ DB_PATH = Path(__file__).parent / "registry.db"
 
 
 def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    # mode=rw fails on a missing file instead of creating an empty DB; timeout is the lock wait.
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=rw", uri=True, timeout=5)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn

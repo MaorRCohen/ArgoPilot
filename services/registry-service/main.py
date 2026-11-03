@@ -94,7 +94,8 @@ def write_plot(write: Callable[..., None], *args) -> None:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
+def health(conn: sqlite3.Connection = Depends(get_db)) -> dict[str, str]:
+    conn.execute("SELECT 1 FROM farms LIMIT 1")
     return {"status": "ok"}
 
 
