@@ -234,3 +234,14 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** use `with TestClient(app)` for this test only (one long-lived loop). Fallback if that also failed: a test against a real uvicorn.
 - **Result:** before the fix, 238 of 240 requests failed (all `ProgrammingError`, 2 returned 200). After the fix, the full suite passes (64 tests).
 - **Why:** a regression test is only useful if it is proven to fail without the fix.
+
+## Step 9 – Delivery
+
+### 42. README scope
+- **Task:** "short service README".
+- **Research:** common practice for a service README is what it does, prerequisites and how to run it locally step by step, the endpoints it implements, and how to run the tests; health and Swagger endpoints are usually just mentioned.
+- **Options:** minimal (~15 lines); short standard (~60 lines: + endpoint table, error format, performance, link to decisions); full (200+).
+- **AI suggested:** short standard.
+- **I decided:** in between (~35–40 lines). Keep everything a newcomer needs to run and call the service; errors and performance as one line each; decisions only linked, not repeated.
+- **Why:** "short" was the requirement; the reasons already live in the judgment log.
+- **Self-review (2 rounds) before sending:** numbers from perf/results.txt with their measurement conditions (a bare p95 reads like a promise for any load); no test count (goes stale); endpoint table derived from main.py; Python version from .python-version; explicit length limit; the load-test command needs a fresh seed and a running server because the script uses fixed seed ids.
