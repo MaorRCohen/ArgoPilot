@@ -110,3 +110,9 @@ def test_patch_farm_with_unknown_field(client, assert_problem):
     assert_problem(
         client.patch(f"/v1/farms/{DEMO_FARM_ID}", json={"nmae": "typo"}), 422, "VALIDATION"
     )
+
+
+def test_delete_farm_with_plots_is_409_not_500(client, assert_problem):
+    # The plots.farm_id foreign key would also block this; the count check must answer first with 409.
+    assert_problem(client.delete(f"/v1/farms/{EAST_FARM_ID}"), 409, "CONFLICT")
+    assert client.get(f"/v1/farms/{EAST_FARM_ID}").status_code == 200

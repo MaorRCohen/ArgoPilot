@@ -1,14 +1,16 @@
 from collections.abc import Callable, Iterator
 from datetime import date, datetime
 import math
-import sqlite3
 import uuid
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI
+from sqlalchemy import Connection, text
 from timezonefinder import TimezoneFinder
 
 from db import (
+    ForeignKeyViolation,
+    UniqueViolation,
     count_plots,
     delete_farm,
     delete_plot,
@@ -51,7 +53,7 @@ REFERENCE_TABLES = {
 PLOT_NAME_CONFLICT = "plot name already exists in this farm"
 
 
-def get_db() -> Iterator[sqlite3.Connection]:
+def get_db() -> Iterator[Connection]:
     conn = get_connection()
     try:
         yield conn
@@ -59,21 +61,21 @@ def get_db() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def get_farm_or_404(conn: sqlite3.Connection, farm_id: str) -> dict:
+def get_farm_or_404(conn: Connection, farm_id: str) -> dict:
     row = get_row(conn, "farms", farm_id)
     if row is None:
         raise ApiError(404, "NOT_FOUND", "Farm not found")
     return row
 
 
-def get_plot_or_404(conn: sqlite3.Connection, plot_id: str) -> dict:
+def get_plot_or_404(conn: Connection, plot_id: str) -> dict:
     row = get_row(conn, "plots", plot_id)
     if row is None:
         raise ApiError(404, "NOT_FOUND", "Plot not found")
     return row
 
 
-def check_references(conn: sqlite3.Connection, values: dict) -> None:
+def check_references(conn: Connection, values: dict) -> None:
     for field, table in REFERENCE_TABLES.items():
         if get_row(conn, table, values[field]) is None:
             raise ApiError(422, "VALIDATION", f"{field}: not found")
@@ -90,20 +92,20 @@ def write_plot(write: Callable[..., None], *args) -> None:
     # Safety net for the UNIQUE(farm_id, name) constraint, in case two requests race past the check.
     try:
         write(*args)
-    except sqlite3.IntegrityError as exc:
-        if "UNIQUE constraint failed: plots.farm_id, plots.name" not in str(exc):
-            raise
+    except UniqueViolation:
         raise ApiError(409, "CONFLICT", PLOT_NAME_CONFLICT)
+    except ForeignKeyViolation:
+        raise ApiError(422, "VALIDATION", "referenced id: not found")
 
 
 @app.get("/health")
-def health(conn: sqlite3.Connection = Depends(get_db)) -> dict[str, str]:
-    conn.execute("SELECT 1 FROM farms LIMIT 1")
+def health(conn: Connection = Depends(get_db)) -> dict[str, str]:
+    conn.execute(text("SELECT 1 FROM farms LIMIT 1"))
     return {"status": "ok"}
 
 
 @app.post("/v1/farms", status_code=201, response_model=Farm)
-def create_farm(body: FarmCreate, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+def create_farm(body: FarmCreate, conn: Connection = Depends(get_db)) -> dict:
     if farm_name_taken(conn, body.name):
         raise ApiError(409, "CONFLICT", "farm name already exists")
     farm = {"id": str(uuid.uuid4()), "name": body.name}
@@ -112,17 +114,17 @@ def create_farm(body: FarmCreate, conn: sqlite3.Connection = Depends(get_db)) ->
 
 
 @app.get("/v1/farms", response_model=list[Farm])
-def list_farms(conn: sqlite3.Connection = Depends(get_db)) -> list[dict]:
+def list_farms(conn: Connection = Depends(get_db)) -> list[dict]:
     return list_rows(conn, "farms")
 
 
 @app.get("/v1/farms/{farm_id}", response_model=Farm)
-def get_farm(farm_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+def get_farm(farm_id: str, conn: Connection = Depends(get_db)) -> dict:
     return get_farm_or_404(conn, farm_id)
 
 
 @app.patch("/v1/farms/{farm_id}", response_model=Farm)
-def update_farm(farm_id: str, body: FarmPatch, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+def update_farm(farm_id: str, body: FarmPatch, conn: Connection = Depends(get_db)) -> dict:
     changes = body.model_dump(exclude_unset=True)
     if not changes:
         raise ApiError(422, "VALIDATION", "no fields to update")
@@ -136,16 +138,19 @@ def update_farm(farm_id: str, body: FarmPatch, conn: sqlite3.Connection = Depend
 
 
 @app.delete("/v1/farms/{farm_id}", status_code=204)
-def remove_farm(farm_id: str, conn: sqlite3.Connection = Depends(get_db)) -> None:
+def remove_farm(farm_id: str, conn: Connection = Depends(get_db)) -> None:
     get_farm_or_404(conn, farm_id)
     plots = count_plots(conn, farm_id)
     if plots > 0:
         raise ApiError(409, "CONFLICT", f"farm has {plots} plots")
-    delete_farm(conn, farm_id)
+    try:
+        delete_farm(conn, farm_id)
+    except ForeignKeyViolation:
+        raise ApiError(409, "CONFLICT", "farm has plots")
 
 
 @app.post("/v1/plots", status_code=201, response_model=Plot)
-def create_plot(body: PlotCreate, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+def create_plot(body: PlotCreate, conn: Connection = Depends(get_db)) -> dict:
     plot = {"id": str(uuid.uuid4()), **body.model_dump(mode="json")}
     check_references(conn, plot)
     check_planting_date(plot["planting_date"], plot["lat"], plot["lon"])
@@ -157,7 +162,7 @@ def create_plot(body: PlotCreate, conn: sqlite3.Connection = Depends(get_db)) ->
 
 @app.get("/v1/plots", response_model=list[Plot])
 def list_plots(
-    farm_id: str | None = None, conn: sqlite3.Connection = Depends(get_db)
+    farm_id: str | None = None, conn: Connection = Depends(get_db)
 ) -> list[dict]:
     if farm_id is not None:
         get_farm_or_404(conn, farm_id)
@@ -165,12 +170,12 @@ def list_plots(
 
 
 @app.get("/v1/plots/{plot_id}", response_model=Plot)
-def get_plot(plot_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+def get_plot(plot_id: str, conn: Connection = Depends(get_db)) -> dict:
     return get_plot_or_404(conn, plot_id)
 
 
 @app.patch("/v1/plots/{plot_id}", response_model=Plot)
-def update_plot(plot_id: str, body: PlotPatch, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+def update_plot(plot_id: str, body: PlotPatch, conn: Connection = Depends(get_db)) -> dict:
     stored = get_plot_or_404(conn, plot_id)
     changes = body.model_dump(mode="json", exclude_unset=True)
     if not changes:
@@ -188,18 +193,18 @@ def update_plot(plot_id: str, body: PlotPatch, conn: sqlite3.Connection = Depend
 
 
 @app.delete("/v1/plots/{plot_id}", status_code=204)
-def remove_plot(plot_id: str, conn: sqlite3.Connection = Depends(get_db)) -> None:
+def remove_plot(plot_id: str, conn: Connection = Depends(get_db)) -> None:
     get_plot_or_404(conn, plot_id)
     delete_plot(conn, plot_id)
 
 
 @app.get("/v1/crops", response_model=list[Crop])
-def list_crops(conn: sqlite3.Connection = Depends(get_db)) -> list[dict]:
+def list_crops(conn: Connection = Depends(get_db)) -> list[dict]:
     return list_rows(conn, "crops")
 
 
 @app.get("/v1/crops/{crop_id}", response_model=Crop)
-def get_crop(crop_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+def get_crop(crop_id: str, conn: Connection = Depends(get_db)) -> dict:
     row = get_row(conn, "crops", crop_id)
     if row is None:
         raise ApiError(404, "NOT_FOUND", "Crop not found")
@@ -207,12 +212,12 @@ def get_crop(crop_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
 
 
 @app.get("/v1/soils", response_model=list[Soil])
-def list_soils(conn: sqlite3.Connection = Depends(get_db)) -> list[dict]:
+def list_soils(conn: Connection = Depends(get_db)) -> list[dict]:
     return list_rows(conn, "soils")
 
 
 @app.get("/v1/soils/{soil_id}", response_model=Soil)
-def get_soil(soil_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+def get_soil(soil_id: str, conn: Connection = Depends(get_db)) -> dict:
     row = get_row(conn, "soils", soil_id)
     if row is None:
         raise ApiError(404, "NOT_FOUND", "Soil not found")
@@ -220,12 +225,12 @@ def get_soil(soil_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
 
 
 @app.get("/v1/emitters", response_model=list[Emitter])
-def list_emitters(conn: sqlite3.Connection = Depends(get_db)) -> list[dict]:
+def list_emitters(conn: Connection = Depends(get_db)) -> list[dict]:
     return list_rows(conn, "emitters")
 
 
 @app.get("/v1/emitters/{emitter_id}", response_model=Emitter)
-def get_emitter(emitter_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+def get_emitter(emitter_id: str, conn: Connection = Depends(get_db)) -> dict:
     row = get_row(conn, "emitters", emitter_id)
     if row is None:
         raise ApiError(404, "NOT_FOUND", "Emitter not found")

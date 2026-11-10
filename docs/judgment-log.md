@@ -289,3 +289,105 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **AI suggested:** remove the irrigation endpoint and models, because CLAUDE.md says no extras and the P1 spec does not list it.
 - **I decided:** rejected; keep the endpoint on this branch.
 - **Why:** this is the coding-agents tutorial exercise on its own branch, not part of P1.
+
+## Step 11 – DATABASE_URL: SQLite locally, PostgreSQL in production
+
+### 50. Driver layer (Q1)
+- **AI suggested:** B: `psycopg` for Postgres and `sqlite3` for SQLite, with a small adapter in `db.py`.
+- **I decided:** overrode it. SQLAlchemy Core, narrowed to a driver adapter: raw SQL via `text()` with named params, no ORM, no query builder, no models. Engine from `DATABASE_URL`, all inside `db.py`.
+- **Why:** SQLAlchemy wraps both drivers' errors in the same `IntegrityError` / `OperationalError`, so `errors.py` maps them once (requirement 1). A later MySQL move becomes a URL + driver change.
+- **Research:** none yet.
+
+### 51. Connection handling (Q2)
+- **AI suggested:** A: SQLite keeps `NullPool`; Postgres uses the default pool.
+- **I decided:** A, plus `pool_pre_ping=True` on Postgres.
+- **Why:** SQLite keeps today's behaviour exactly (PRAGMA in a connect event, `mode=rw`, `timeout=5`, same 503 path). `pool_pre_ping` detects a dropped Postgres connection instead of failing a request.
+
+### 52. Which failures return 503 (Q3)
+- **AI suggested:** A: any connection-level failure on Postgres -> 503, other errors -> 500.
+- **I decided:** A, plus lock timeout and deadlock. Rule: temporary DB problem -> 503 + `Retry-After: 30`; bug -> 500.
+- **Why:** retrying helps with the first group (cannot connect, timeout, disconnect, too many connections, row lock, deadlock) and does not help with a missing table or bad SQL. Each case is tested with a simulated error.
+
+### 53. Loading DATABASE_URL (Q4)
+- **AI suggested:** A: `python-dotenv`, default `sqlite:///registry.db` when unset.
+- **I decided:** A with two guards: log only the scheme at startup; `.env` git-ignored, only `.env.example` committed. A real environment variable wins (`override=False`).
+- **Why:** `.env` will hold a password. Tests set `DATABASE_URL` to a temp SQLite copy, never `registry.db`.
+- **Non-obvious consequence:** startup logging is an extra (CLAUDE.md says no logging); I asked for it.
+
+### 54. Proving it works on Postgres (Q5)
+- **AI suggested:** A: one manual throwaway check against Docker Postgres, no test code in the repo.
+- **I decided:** overrode it. B: the same test suite runs on Postgres when `TEST_DATABASE_URL` is set; skipped by default.
+- **Why:** grading is a live demo: the same suite passing on SQLite and then on Postgres is the proof for requirement 1. I start the Docker container myself; tests never start or stop it. The Postgres schema file is for tests/local only.
+
+### 55. Clean Postgres state per test (Q6)
+- **AI suggested:** A: drop and recreate the schema, then re-run one `seed_registry_pg.sql` before every test.
+- **I decided:** A, with a safety guard: refuse to run unless the host is localhost/127.0.0.1 and the database name contains "test". The guard has its own test.
+- **Why:** a wrong URL must never be able to wipe a real database.
+
+### 56. How tests choose the DB (Q7)
+- **AI suggested:** B: module-level `engine` in `db.py`, tests patch `db.engine`.
+- **I decided:** B. `conftest` sets `DATABASE_URL` to a temp SQLite file before `db.py` is imported. A test proves this holds even when `.env` points elsewhere.
+- **Why:** a local `.env` with a real URL must never be used by tests (the environment variable wins over `.env`).
+
+### 57. Type differences between databases (Q8)
+- **AI suggested:** C: translate the test schema to matching types now; add normalization only if needed.
+- **I decided:** C, after I asked the AI to check first. It found one real break: `update_plot` merges the stored row, then `date.fromisoformat()` fails on a `date` (500).
+- **Why:** the spec does not describe production column types, so I can't assume TEXT/REAL.
+
+### 58. Where to normalize (Q9)
+- **AI suggested:** A: normalize rows in `db.py`.
+- **I decided:** A: `date` -> `"YYYY-MM-DD"`, `Decimal` -> `float`. The Postgres test schema uses DATE and NUMERIC so the suite proves it, with a PATCH-without-`planting_date` test.
+- **Why:** all DB differences stay in `db.py`.
+
+### 59. Unique and foreign-key violations (Q10)
+- **AI suggested:** A: `db.py` raises its own `UniqueViolation`.
+- **I decided:** A (after weighing C: check only SQLSTATE 23505). Also `ForeignKeyViolation`, translated from SQLite messages or SQLSTATE 23505/23503. `main.py` changes only in type hints and those catches.
+- **Why:** driver details stay out of `main.py`. Delete-farm-with-plots and unknown catalogue ids must stay 409 / 422 on both databases, tested on both. A future MySQL (SQLSTATE 23000) maps into the same exceptions.
+
+### 60. Performance on both databases (Q11)
+- **AI suggested:** A: re-run k6 on SQLite only.
+- **I decided:** overrode it. B: same script, same thresholds, run on SQLite and on Docker Postgres; both p95 numbers recorded and labelled in `perf/results.txt`.
+- **Why:** production runs on Postgres, so NFR-1.1 must be measured there. If Postgres misses 100 ms, report it; do not tune the thresholds.
+
+### 61. A database error with no code counts as temporary (Task 4)
+- **AI suggested:** an `OperationalError` that has no SQLSTATE and no `sqlite_errorname` returns 503 + `Retry-After: 30`.
+- **I decided:** accepted.
+- **Why:** psycopg client-side failures (connection refused, DNS error, connect timeout) arrive without a SQLSTATE, and the rule is "temporary problem -> 503, bug -> 500". Bad SQL and a missing table come as `ProgrammingError` (SQLite: `SQLITE_ERROR`), so they still return 500.
+- **Non-obvious consequence:** any other code-less `OperationalError` is also treated as temporary. On Python older than 3.11 SQLite has no `sqlite_errorname`, so every SQLite `OperationalError` would become 503; the project is on 3.12.
+
+### 62. Performance failed after the change: profile, don't tune (Task 8)
+- **AI suggested:** profile before touching anything; hypotheses 1-4 below, then the smallest fix.
+- **I decided:** profile, not tune. Thresholds and the k6 script stay as they are.
+- **First (failing) numbers, 2026-11-10:** SQLite p95 67.6 / 71.8 / 70.8 / 68.7 ms with 9 / 9 / 10 / 11 dropped iterations (max 1.95 s); PostgreSQL p95 207.3 / 184.4 / 164.0 / 169.0 ms with 3 dropped per scenario. Raw output: `docs/perf-noisy-runs-2026-11-10.txt`. A first comparison with the old code gave 32-36 ms, which looked like a real regression.
+- **Investigation:**
+
+| Hypothesis | Measured | Confirmed? |
+|---|---|---|
+| Pool queueing (default pool 5+10 vs threadpool) | Postgres pool 20+20: p95 75 vs 81 ms (a repeat of the current code gave 71); about 1-2 connections in use at 40 rps | No |
+| `pool_pre_ping` round trip | off: 69 vs 81 ms; repeat of current 71 (within noise) | No |
+| SQLite NullPool connect + PRAGMA event | +0.9 ms per request in-process (1.28 vs 0.39 ms); A/B on SQLite new 38-69 ms vs old 27-58 ms, 0 dropped | No |
+| Other (engine per request, access log) | engine built once at import; access log on/off made no difference | No |
+
+- **Conclusion: host drift, not the code.** Back-to-back runs of the same old code went from p95 27 ms to 58 ms, and its server CPU time for the same work from 39 s to 78 s, within one session. My first old-code run was just taken at a quiet moment.
+- **Clean rerun (nothing else running, old / new SQLite / new PostgreSQL back-to-back):** all thresholds pass. p95 farms list / by id / plots list / plot by id: old 32.2 / 32.9 / 33.1 / 35.6; new SQLite 28.2 / 29.1 / 29.0 / 30.6; new PostgreSQL 35.9 / 36.8 / 36.6 / 37.4 ms; 0 dropped. Details in `perf/results.txt`.
+- **Non-obvious:** a failing k6 run on this machine is not evidence by itself. Compare against the old code back-to-back before blaming a change.
+
+### 63. Test guard: query string and libpq variables (final review)
+- **AI suggested:** the final review found that `?host=`, `?hostaddr=` and `?dbname=` in `TEST_DATABASE_URL` pass the guard but connect elsewhere (I reproduced all three), and that `PGHOST` etc. do the same. Refuse any query string, and refuse to run when `PGHOST`, `PGHOSTADDR`, `PGSERVICE` or `PGDATABASE` is set.
+- **I decided:** accepted; I rated the environment bypass as data-loss risk, not minor. Red first: 7 new tests failed, then passed.
+- **Non-obvious consequence:** a legitimate `?sslmode=...` on the test URL is now refused too. Tests only run against local Docker, so this is fine.
+
+### 64. Assumed Postgres constraint name (final review)
+- **AI suggested / I decided:** accepted. The plot-name 409 on Postgres matches SQLSTATE 23505 plus the constraint name `plots_farm_id_name_key` (Postgres's default for `UNIQUE (farm_id, name)`). It is an assumption: the production schema is unseen.
+- **Cost if wrong:** a race on two plots with the same name in one farm gives 500 instead of 409. The normal path (checked in code first) is unaffected. Check `\d plots` in production before relying on it.
+
+### 65. Minor review findings, deferred (final review)
+- NUL byte (`\u0000`) in a farm id or name: SQLite accepts it (404/201), psycopg raises DataError and the API answers 500. Not verified live. Deferred.
+- A `.env` that sets `TEST_DATABASE_URL` switches the tests to Postgres mode (`load_dotenv` runs before conftest reads it). The guard still applies. Deferred.
+- `.env.example` uses `sqlite:///registry.db` (relative to the working directory); the default when unset is next to `db.py`. They agree only from `services/registry-service`. Deferred.
+- `connection_invalidated` -> 503 is not documented in the README. Deferred.
+- UUID id columns in production are untested (rows are normalized to str, but never run on real UUID columns). Deferred.
+- README Postgres section lacks "run from services/registry-service". Deferred.
+- `docs/perf-noisy-runs-2026-11-10.txt` is untracked: commit it, or judgment-log #62 points to nothing.
+- `CLAUDE.md` had no trailing newline. Deferred.
+

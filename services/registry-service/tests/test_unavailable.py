@@ -1,6 +1,7 @@
 import pytest
 
 
+@pytest.mark.sqlite_only
 def test_missing_db_file_returns_503_and_is_not_created(client, db_path, assert_problem):
     db_path.unlink()
 
@@ -15,6 +16,7 @@ def test_missing_db_file_returns_503_and_is_not_created(client, db_path, assert_
     assert not db_path.exists()
 
 
+@pytest.mark.sqlite_only
 def test_db_without_tables_returns_500_without_sqlite_text(client, db_path, assert_problem):
     db_path.write_bytes(b"")
 
