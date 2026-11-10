@@ -245,3 +245,13 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** in between (~35–40 lines). Keep everything a newcomer needs to run and call the service; errors and performance as one line each; decisions only linked, not repeated.
 - **Why:** "short" was the requirement; the reasons already live in the judgment log.
 - **Self-review (2 rounds) before sending:** numbers from perf/results.txt with their measurement conditions (a bare p95 reads like a promise for any load); no test count (goes stale); endpoint table derived from main.py; Python version from .python-version; explicit length limit; the load-test command needs a fresh seed and a running server because the script uses fixed seed ids.
+
+## Experiment – Ollama agent input
+
+### 43. Stray byte crashes the Ollama agent
+- **Found:** `printf 'exit\xd7\n' | uv run agent.py` raised `UnicodeEncodeError: '\udcd7' surrogates not allowed` in httpx when sending to Ollama. `.strip()` keeps the bad byte, so `"exit"` never matched.
+- **AI suggested:** three-part fix: `sys.stdin.reconfigure(errors="replace")`, compare `.strip().lower() == "exit"`, treat `EOFError` as exit.
+- **I decided:** harden input (replace bad bytes, strip, EOF = exit) instead of relying on an English keyboard during the demo.
+- **Why:** a bad byte should never crash a request, and the demo should not depend on the keyboard layout.
+- **Research:** Python docs: `TextIOWrapper.reconfigure()` (3.7+) can change `errors` on `sys.stdin`; `input()` raises `EOFError` at end of input.
+- **Non-obvious consequence:** `exit` followed by a stray byte no longer quits. It becomes `exit�` and goes to the model, which took about 3.5 minutes on this machine. Ctrl+D (EOF) still quits.

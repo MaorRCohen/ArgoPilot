@@ -1,7 +1,9 @@
+import sys
 from datetime import date
 
 from ollama import chat
 
+sys.stdin.reconfigure(errors="replace")
 MODEL = "qwen3:1.7b"
 
 
@@ -18,8 +20,11 @@ messages = [
 ]
 
 while True:
-    user = input("you> ").strip()
-    if user == "exit":
+    try:
+        user = input("you> ").strip()
+    except EOFError:
+        break
+    if user.lower() == "exit":
         break
     messages.append({"role": "user", "content": user})
     while True:
