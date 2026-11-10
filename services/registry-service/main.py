@@ -1,5 +1,6 @@
 from collections.abc import Callable, Iterator
 from datetime import date, datetime
+import math
 import sqlite3
 import uuid
 from zoneinfo import ZoneInfo
@@ -28,6 +29,8 @@ from models import (
     Emitter,
     Farm,
     FarmCreate,
+    IrrigationVolume,
+    IrrigationVolumeRequest,
     FarmPatch,
     Plot,
     PlotCreate,
@@ -227,3 +230,12 @@ def get_emitter(emitter_id: str, conn: sqlite3.Connection = Depends(get_db)) -> 
     if row is None:
         raise ApiError(404, "NOT_FOUND", "Emitter not found")
     return row
+
+
+@app.post("/v1/irrigation/volume", response_model=IrrigationVolume)
+def irrigation_volume(body: IrrigationVolumeRequest) -> dict:
+    # 1 mm of water over 1 m² is 1 litre (1 m² x 0.001 m = 0.001 m³ = 1 L).
+    volume_l = body.area_m2 * body.depth_mm
+    if not math.isfinite(volume_l):
+        raise ApiError(422, "VALIDATION", "volume_l: result is too large")
+    return {"volume_l": volume_l}

@@ -78,3 +78,12 @@ class Emitter(BaseModel):
     id: str
     name: str
     flow_lph: float
+
+
+class IrrigationVolumeRequest(RequestModel):
+    area_m2: float = Field(gt=0, allow_inf_nan=False)
+    depth_mm: float = Field(ge=0, allow_inf_nan=False)
+
+
+class IrrigationVolume(BaseModel):
+    volume_l: float

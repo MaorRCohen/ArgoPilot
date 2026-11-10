@@ -255,3 +255,37 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **Why:** a bad byte should never crash a request, and the demo should not depend on the keyboard layout.
 - **Research:** Python docs: `TextIOWrapper.reconfigure()` (3.7+) can change `errors` on `sys.stdin`; `input()` raises `EOFError` at end of input.
 - **Non-obvious consequence:** `exit` followed by a stray byte no longer quits. It becomes `exit�` and goes to the model, which took about 3.5 minutes on this machine. Ctrl+D (EOF) still quits.
+
+## Step 10 – Irrigation volume (POST /v1/irrigation/volume)
+
+### 44. Volume formula
+- **AI suggested:** volume_l = area_m2 × depth_mm, with no efficiency factor.
+- **I decided:** keep area_m2 × depth_mm (1 mm on 1 m² = 1 L).
+- **Why:** 1 mm over 1 m² is exactly 1 litre, so no conversion constant is needed. The spec gives depth_mm directly. An efficiency factor (gross vs net depth) would be an extra input the spec does not ask for.
+- **Research:** arithmetic: 1 m² × 0.001 m = 0.001 m³ = 1 L. Web search (standard): calculator pages use volume = area × depth, e.g. [bighaat drip-irrigation guide](https://www.bighaat.com/kisan-vedika/blogs/how-to-calculate-water-requirement-for-drip-irrigation) and [WA DPIRD converting readily available water to litres](https://agric.wa.gov.au/spring/converting-readily-available-water-litres-drip-irrigation). I saw these in search results only; I did not open them in full.
+
+### 45. Field names and status code
+- **AI suggested:** request `area_m2`, `depth_mm`; response `{"volume_l": ...}`; status 200.
+- **I decided:** keep volume_l (unit-suffix style, like area_m2 / flow_lph).
+- **Why:** the course spec has no irrigation section, so the names are a choice. They follow the spec's unit-suffix style (`area_m2`, `flow_lph`, `available_water_mm_per_m`). Status 200, not 201: the call calculates and creates nothing.
+
+### 46. Input rules
+- **AI suggested:** `area_m2` > 0; `depth_mm` >= 0; unknown fields -> 422; reject Infinity.
+- **I decided:** keep depth_mm >= 0; 0 = no irrigation is a real value, not invalid input. Keep area_m2 > 0 (zero area is meaningless, same as plots). Keep rejecting unknown fields (a typo like depht_mm must fail loudly, not silently). Keep rejecting Infinity/NaN (no infinite water volume).
+- **Why:** `area_m2` > 0 matches the plot rule (FR-1.3). `depth_mm` = 0 is valid (no water). Unknown fields are rejected like the other request models (decision 17). Infinity: pydantic accepts it with `gt=0`. `allow_inf_nan=False` makes it a 422. Correction: a finite overflow (1e200 × 1e200) does not return 500; it returned 200 with `volume_l` null. Fixed in #48.
+- **Research:** checked in the venv: `Field(gt=0)` accepts `float('inf')`; with `allow_inf_nan=False` it is rejected. Before the flag, the two Infinity tests failed with `ValueError: Out of range float values are not JSON compliant`; after it, they pass. The test sends raw `Infinity` bytes, because httpx refuses to encode infinity.
+
+### 47. Found, not fixed: Infinity on POST /v1/plots
+- **AI found:** `PlotCreate.area_m2` has the same gap. Checked on a scratch copy of registry.db: POST returns 201 and stores the row; GET then returns `"area_m2": null`. The spacing fields and `PlotPatch` use the same `gt=0` and were not tested.
+- **I decided:** TODO (fix now, or log as a known gap)
+- **Why:** it is outside this task, and the task says no extras. Fixing it means adding `allow_inf_nan=False` to the plot models and a test per field.
+
+### 48. Finite inputs that overflow to infinity
+- **AI suggested:** check the product with `math.isfinite`; return 422 VALIDATION when it is not finite.
+- **I decided:** 422 VALIDATION, because the client sent values that cannot produce a real volume; it is a client error, not a server failure.
+- **Why:** `allow_inf_nan=False` checks only the inputs, and 1e200 × 1e200 has finite inputs. Without the check the endpoint returned 200 with `volume_l: null`, which breaks the float contract. Test: `test_overflowing_volume_is_rejected` (failed with 200 before the fix, passes after).
+
+### 49. Review finding 11: irrigation endpoint outside P1
+- **AI suggested:** remove the irrigation endpoint and models, because CLAUDE.md says no extras and the P1 spec does not list it.
+- **I decided:** rejected; keep the endpoint on this branch.
+- **Why:** this is the coding-agents tutorial exercise on its own branch, not part of P1.
