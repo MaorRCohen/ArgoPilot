@@ -398,3 +398,9 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **Why:** the conventions live in my head and CLAUDE.md; a skill loads them only when working on routes, so they apply consistently.
 - **Research:** read `errors.py` to copy the real error body shape. Non-obvious: `errors.py` returns code `UNAVAILABLE` with status 500 for unexpected errors, which is outside the four codes listed in the skill. Not changed, flagged for my decision.
 - **Follow-up (review of the skill):** AI suggested the split of /v1 and lists into two rules, rule 9 (registry.db), the spec URL in the "ask" rule, and the 405 / bad JSON reminder. I decided to merge the split back and keep the other three. Why: one rule per topic as I gave it; the other three match P1 behavior and invent nothing new.
+
+### 67. GET /v1/farms/{id}/area (outside the P1 spec)
+- **AI suggested:** the P1 spec has no area endpoint (16 routes, only the plot field `area_m2`), so flag it as beyond scope and ask for the contract instead of inventing one. Proposed body `{"farm_id", "total_area_m2"}`, 200 with 0 for a farm with no plots, 404 NOT_FOUND for an unknown farm, sum done in SQL (`COALESCE(SUM(area_m2), 0)`) in `db.py`.
+- **I decided:** add it anyway, at my request. Accepted the `farm_id` + `total_area_m2` body and "no plots -> 200 with 0".
+- **Why:** echoing `farm_id` makes the response self-describing; the `_m2` suffix matches `area_m2`. A farm with no plots exists and has area 0, so 404 stays reserved for an unknown id (skill rule 1).
+- **Research:** read the spec (endpoint table, FR-1.3, seed table: unit is m²) and the seed data (demo farm 1000 + 800 = 1800, used in the test). Tests: success, empty farm, unknown id (404), missing DB (503 + Retry-After).

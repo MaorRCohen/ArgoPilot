@@ -5,7 +5,7 @@ import pytest
 def test_missing_db_file_returns_503_and_is_not_created(client, db_path, assert_problem):
     db_path.unlink()
 
-    for path in ["/health", "/v1/farms"]:
+    for path in ["/health", "/v1/farms", "/v1/farms/any-id/area"]:
         response = client.get(path)
 
         assert_problem(response, 503, "UNAVAILABLE")

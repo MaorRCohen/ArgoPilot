@@ -22,6 +22,7 @@ from db import (
     list_rows,
     plot_name_taken,
     select_plots,
+    sum_plot_area,
     update_farm_name,
     update_plot_fields,
 )
@@ -30,6 +31,7 @@ from models import (
     Crop,
     Emitter,
     Farm,
+    FarmArea,
     FarmCreate,
     IrrigationVolume,
     IrrigationVolumeRequest,
@@ -121,6 +123,12 @@ def list_farms(conn: Connection = Depends(get_db)) -> list[dict]:
 @app.get("/v1/farms/{farm_id}", response_model=Farm)
 def get_farm(farm_id: str, conn: Connection = Depends(get_db)) -> dict:
     return get_farm_or_404(conn, farm_id)
+
+
+@app.get("/v1/farms/{farm_id}/area", response_model=FarmArea)
+def get_farm_area(farm_id: str, conn: Connection = Depends(get_db)) -> dict:
+    get_farm_or_404(conn, farm_id)
+    return {"farm_id": farm_id, "total_area_m2": sum_plot_area(conn, farm_id)}
 
 
 @app.patch("/v1/farms/{farm_id}", response_model=Farm)

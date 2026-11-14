@@ -12,6 +12,11 @@ class Farm(BaseModel):
     name: str
 
 
+class FarmArea(BaseModel):
+    farm_id: str
+    total_area_m2: float = Field(ge=0)
+
+
 class FarmCreate(RequestModel):
     name: str = Field(min_length=1)
 

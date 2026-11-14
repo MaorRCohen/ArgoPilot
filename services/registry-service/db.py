@@ -177,6 +177,13 @@ def count_plots(conn: Connection, farm_id: str) -> int:
     ).scalar_one()
 
 
+def sum_plot_area(conn: Connection, farm_id: str) -> float:
+    return conn.execute(
+        text("SELECT COALESCE(SUM(area_m2), 0) FROM plots WHERE farm_id = :farm_id"),
+        {"farm_id": farm_id},
+    ).scalar_one()
+
+
 def delete_farm(conn: Connection, farm_id: str) -> None:
     _write(conn, "DELETE FROM farms WHERE id = :id", {"id": farm_id})
 
