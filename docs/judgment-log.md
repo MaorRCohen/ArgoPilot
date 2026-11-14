@@ -391,3 +391,10 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - `docs/perf-noisy-runs-2026-11-10.txt` is untracked: commit it, or judgment-log #62 points to nothing.
 - `CLAUDE.md` had no trailing newline. Deferred.
 
+
+### 66. Project skill `registry-api`
+- **AI suggested:** a project skill at `services/registry-service/.claude/skills/registry-api/SKILL.md` that encodes the API conventions (/v1, bare-array lists, spec-only fields, PATCH semantics, problem+json codes, tests per failure, run pytest, ask when the spec is silent, never touch registry.db), each with a "Why" and an example error body.
+- **I decided:** accepted. Skipped the skill-creator eval loop (subagent test runs): the rules are checklist-style and the existing test suite already enforces most of them.
+- **Why:** the conventions live in my head and CLAUDE.md; a skill loads them only when working on routes, so they apply consistently.
+- **Research:** read `errors.py` to copy the real error body shape. Non-obvious: `errors.py` returns code `UNAVAILABLE` with status 500 for unexpected errors, which is outside the four codes listed in the skill. Not changed, flagged for my decision.
+- **Follow-up (review of the skill):** AI suggested the split of /v1 and lists into two rules, rule 9 (registry.db), the spec URL in the "ask" rule, and the 405 / bad JSON reminder. I decided to merge the split back and keep the other three. Why: one rule per topic as I gave it; the other three match P1 behavior and invent nothing new.
