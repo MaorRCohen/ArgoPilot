@@ -1,0 +1,91 @@
+{
+  "skill_name": "registry-api",
+  "status": "rewritten 2026-11-15: spec in prompts 1-3, every check is code. Run 2026-11-15: 24 of 24 runs, all checks passed in both configs. Two without_skill runs of eval 3 were denied out-of-scope Write calls; the scope held and they still passed.",
+  "format_note": "Old evals.json shape (skill_name + evals[]). Each expectation is an object with type code. There are no judge checks: each check is a command (curl, sqlite3, pytest, diff), a transcript check, or a string check. Readers that expect plain strings will not parse these.",
+  "run_settings": {
+    "configs": ["with_skill", "without_skill"],
+    "runs_per_config": 3,
+    "total_runs": 24,
+    "source": "services/registry-service in the repo, read only",
+    "run_dir": "/tmp/registry-evals/<run-id>/ where run-id = <eval_name>-<config>-r<n>. Never inside .claude."
+  },
+  "run_protocol": [
+    "1. Copy the source with tar, excluding registry.db, into <run_dir>/service. The copy sits outside the repo, so the repo CLAUDE.md is not loaded in either config.",
+    "2. without_skill only: rm -rf <run_dir>/service/.claude/skills/registry-api.",
+    "3. Make <run_dir>/pristine as a copy of <run_dir>/service after step 2, without .venv and registry.db. It is the baseline for the no-change diff.",
+    "4. Seed the copy's own DB: bash seed_registry.sh <run_dir>/service/registry.db. Never open the repo's registry.db.",
+    "5. Agent, one turn, no follow-up: cd <run_dir>/service && claude -p \"<prompt>\" --output-format stream-json --verbose --allowedTools Read 'Edit(//tmp/registry-evals/<run-id>/**)' 'Write(//tmp/registry-evals/<run-id>/**)' 'Bash(.venv/bin/python:*)' 'Bash(curl:*)' > <run_dir>/transcript.jsonl. Never bypass permissions. If edits are denied (permission_denials in the result event), stop the batch and report.",
+    "6. Eval 4 only: diff -r --exclude registry.db --exclude .venv --exclude __pycache__ --exclude .pytest_cache <run_dir>/pristine <run_dir>/service must exit 0.",
+    "7. Fixture, every run: sqlite3 <run_dir>/service/registry.db \"INSERT INTO crops (id, name) VALUES ('cucumber', 'Cucumber');\". The seed has no crop without plots, so the empty-list check needs this crop.",
+    "8. Server: cd <run_dir>/service && DATABASE_URL=sqlite:////<absolute run_dir>/service/registry.db .venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port <free port>. No --reload. uv is not on PATH. An absolute SQLite path needs four slashes. Wait for GET /health to return 200.",
+    "9. Code checks: HTTP requests and sqlite3 against the running server, plus transcript.jsonl checks. Save each response under <run_dir>/checks/. Write <run_dir>/results.json with one {id, text, passed, evidence} per expectation.",
+    "10. Pytest: cd <run_dir>/service && .venv/bin/python -m pytest -q. Record the exit code.",
+    "11. Stop the server. Keep transcript.jsonl, checks/, results.json and the server log.",
+    "12. Repo guard, before the first run and after the last: stat -c '%s %Y' services/registry-service/registry.db must not change, and git status --porcelain must match its pre-run output. The guard uses stat, not a read of registry.db."
+  ],
+  "evals": [
+    {
+      "id": 1,
+      "eval_name": "farm-plot-count",
+      "prompt": "We need a quick plot count per farm for the dashboard. Add GET /v1/farms/{id}/plots/count. The farm must exist. It returns {\"farm_id\": <id>, \"plot_count\": <int>}, and a farm with no plots returns 0.",
+      "expected_output": "GET /v1/farms/{id}/plots/count is added and returns {farm_id, plot_count}. Demo cooperative (b7e2c0a0-3c1d-4f0a-9a11-0c5d2e6f1001) returns 200 with plot_count 2. A farm with no plots returns 200 with plot_count 0. An unknown farm id returns 404 application/problem+json with code NOT_FOUND. A test covers the route.",
+      "files": [],
+      "expectations": [
+        {"id": "e1-1", "type": "code", "text": "The skill loaded before the first edit (with_skill), or not at all (without_skill)", "how": "transcript.jsonl: a Skill tool_use with input.skill == 'registry-api' comes before the first Write or Edit tool_use. In without_skill, no Skill tool_use names registry-api."},
+        {"id": "e1-2", "type": "code", "text": "The known farm returns 200 with plot_count 2", "how": "GET /v1/farms/b7e2c0a0-3c1d-4f0a-9a11-0c5d2e6f1001/plots/count: status 200, content type application/json, body equals {\"farm_id\": \"b7e2c0a0-3c1d-4f0a-9a11-0c5d2e6f1001\", \"plot_count\": 2}."},
+        {"id": "e1-3", "type": "code", "text": "A farm with no plots returns 200 with plot_count 0, not 404", "how": "POST /v1/farms with {\"name\": \"Count check empty farm\"}, then GET .../plots/count on the new id: status 200, body equals {\"farm_id\": <new id>, \"plot_count\": 0}."},
+        {"id": "e1-4", "type": "code", "text": "An unknown farm returns 404 problem+json with code NOT_FOUND", "how": "GET /v1/farms/00000000-0000-0000-0000-000000000000/plots/count: status 404, content type application/problem+json, JSON field code == 'NOT_FOUND'."},
+        {"id": "e1-5", "type": "code", "text": "A test for the route exists and asserts NOT_FOUND", "how": "grep -l 'plots/count' tests/*.py returns a file, and that file contains NOT_FOUND. This is a string check; it does not prove the assertion is right."},
+        {"id": "e1-6", "type": "code", "text": "pytest passes", "how": "cd <run_dir>/service && .venv/bin/python -m pytest -q exits 0."}
+      ]
+    },
+    {
+      "id": 2,
+      "eval_name": "crop-plot-list",
+      "prompt": "Agronomy wants to see every plot planted with a given crop. Add GET /v1/crops/{id}/plots. The crop must exist. It returns the plots whose crop_id is {id}, with the same fields as GET /v1/plots/{id}, ordered by id.",
+      "expected_output": "GET /v1/crops/{id}/plots is added and returns plots ordered by id. tomato returns 200 with a bare JSON array of its 2 plots (North block, West block). A crop with no plots (the fixture cucumber) returns 200 with exactly []. An unknown crop id returns 404 application/problem+json with code NOT_FOUND. Each plot object has the same fields as GET /v1/plots/{id}. A test covers the route.",
+      "files": [],
+      "expectations": [
+        {"id": "e2-1", "type": "code", "text": "The skill loaded before the first edit (with_skill), or not at all (without_skill)", "how": "transcript.jsonl: a Skill tool_use with input.skill == 'registry-api' comes before the first Write or Edit tool_use. In without_skill, no Skill tool_use names registry-api."},
+        {"id": "e2-2", "type": "code", "text": "tomato returns 200 with a bare array of its 2 plots in id order", "how": "GET /v1/crops/tomato/plots: status 200, content type application/json, JSON array of length 2. The ids, in order, equal c8f3d1b0-4d2e-5a1b-8b22-1d6e3f702002 then e0b5f3d2-6f40-4c7b-8d44-3f8a5b914004 (SELECT id FROM plots WHERE crop_id='tomato' ORDER BY id)."},
+        {"id": "e2-3", "type": "code", "text": "A crop with no plots returns exactly []", "how": "GET /v1/crops/cucumber/plots: status 200, content type application/json, response body text is exactly []."},
+        {"id": "e2-4", "type": "code", "text": "An unknown crop returns 404 problem+json with code NOT_FOUND", "how": "GET /v1/crops/no-such-crop/plots: status 404, content type application/problem+json, JSON field code == 'NOT_FOUND'. The spec says the crop must exist; the 404 code is the skill's rule for unknown ids, the same as GET /v1/crops/{id}."},
+        {"id": "e2-5", "type": "code", "text": "Each plot object has the same fields as GET /v1/plots/{id}", "how": "The key set of each element in the tomato response equals the key set of GET /v1/plots/c8f3d1b0-4d2e-5a1b-8b22-1d6e3f702002."},
+        {"id": "e2-6", "type": "code", "text": "A test for the route exists and covers the empty and unknown cases", "how": "grep -l 'crops/' tests/*.py returns a file that also contains NOT_FOUND and [] (checked with grep -F). This is a string check; it does not prove the assertions are right."},
+        {"id": "e2-7", "type": "code", "text": "pytest passes", "how": "cd <run_dir>/service && .venv/bin/python -m pytest -q exits 0."}
+      ]
+    },
+    {
+      "id": 3,
+      "eval_name": "plot-location-patch",
+      "prompt": "A farmer corrected the GPS point of the North block. Add PATCH /v1/plots/{id}/location so a client can change a plot's lat, lon, or both, without resending the rest of the plot. The plot must exist. The body has lat and/or lon. It returns the full plot, with the same fields as GET /v1/plots/{id}.",
+      "expected_output": "PATCH /v1/plots/{id}/location is added and returns the full plot. Sending only lat changes lat and nothing else. Sending only lon changes lon only. Every other field is unchanged. lat 91, lon 181, lat null and {} return 422 VALIDATION problem+json and leave the row unchanged. An unknown field returns 422. An unknown plot returns 404 NOT_FOUND. Invalid JSON and a wrong method (GET) both return problem+json. A test covers each failure.",
+      "files": [],
+      "expectations": [
+        {"id": "e3-1", "type": "code", "text": "The skill loaded before the first edit (with_skill), or not at all (without_skill)", "how": "transcript.jsonl: a Skill tool_use with input.skill == 'registry-api' comes before the first Write or Edit tool_use. In without_skill, no Skill tool_use names registry-api."},
+        {"id": "e3-2", "type": "code", "text": "Sending only lat changes only lat", "how": "Snapshot GET /v1/plots/c8f3d1b0-4d2e-5a1b-8b22-1d6e3f702002 as A. PATCH .../location with {\"lat\": 31.30}: status 200. GET again as B. B.lat == 31.30, and every other key in B equals A."},
+        {"id": "e3-3", "type": "code", "text": "Sending only lon changes only lon", "how": "PATCH .../location with {\"lon\": 34.85}: status 200. GET again as C. C.lon == 34.85, and every other key in C equals B."},
+        {"id": "e3-4", "type": "code", "text": "The PATCH success response has the Plot fields", "how": "The key set of the 200 response from the PATCH in e3-3 equals the key set of GET /v1/plots/{id}."},
+        {"id": "e3-5", "type": "code", "text": "lat 91 and lon 181 return 422 VALIDATION and change nothing", "how": "PATCH {\"lat\": 91} and PATCH {\"lon\": 181}: each returns status 422, content type application/problem+json, JSON field code == 'VALIDATION'. A GET after each equals C."},
+        {"id": "e3-6", "type": "code", "text": "lat null and an empty body return 422 VALIDATION and change nothing", "how": "PATCH {\"lat\": null} and PATCH {}: each returns status 422, application/problem+json, code 'VALIDATION'. A GET after each equals C. These follow the project's PATCH rules, not the prompt."},
+        {"id": "e3-7", "type": "code", "text": "An unknown field is rejected", "how": "PATCH {\"lat\": 31.3, \"name\": \"x\"}: status 422, code 'VALIDATION'. The name is unchanged (GET equals C). Follows the request-model rule that unknown fields are 422."},
+        {"id": "e3-8", "type": "code", "text": "An unknown plot returns 404 NOT_FOUND", "how": "PATCH /v1/plots/00000000-0000-0000-0000-000000000000/location with {\"lat\": 31.3}: status 404, application/problem+json, code 'NOT_FOUND'."},
+        {"id": "e3-9", "type": "code", "text": "Invalid JSON goes through the problem+json handler", "how": "PATCH .../location with the raw body {\"lat\": (truncated JSON): status 422, application/problem+json, code 'VALIDATION', and detail is a string."},
+        {"id": "e3-10", "type": "code", "text": "A wrong method returns problem+json", "how": "GET /v1/plots/c8f3d1b0-4d2e-5a1b-8b22-1d6e3f702002/location: status 405, application/problem+json, code 'VALIDATION' (the existing mapping for 405 in errors.py), and detail is a string."},
+        {"id": "e3-11", "type": "code", "text": "A test for the route exists and covers the failure codes", "how": "grep -l '/location' tests/*.py returns a file that contains VALIDATION and NOT_FOUND. This is a string check only."},
+        {"id": "e3-12", "type": "code", "text": "pytest passes", "how": "cd <run_dir>/service && .venv/bin/python -m pytest -q exits 0."}
+      ]
+    },
+    {
+      "id": 4,
+      "eval_name": "negative-soil-water-meaning",
+      "prompt": "What does available_water_mm_per_m mean?",
+      "expected_output": "Negative case: the registry-api skill must not load in either config. The answer says available_water_mm_per_m is the water the soil holds that plants can use, per metre of soil depth, in mm. It may cite the seed values (sand 83, loam 175, clay-loam 200). No file in the copy changes and no endpoint is added.",
+      "files": [],
+      "expectations": [
+        {"id": "e4-1", "type": "code", "text": "The skill was not loaded or read", "how": "transcript.jsonl has no Skill tool_use with input.skill == 'registry-api' and no Read of .claude/skills/registry-api/SKILL.md. Expected in both configs."},
+        {"id": "e4-2", "type": "code", "text": "No file in the copy changed", "how": "Step 6 of run_protocol: diff -r --exclude registry.db --exclude .venv --exclude __pycache__ --exclude .pytest_cache <run_dir>/pristine <run_dir>/service exits 0."}
+      ]
+    }
+  ]
+}
