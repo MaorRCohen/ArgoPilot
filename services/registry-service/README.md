@@ -1,6 +1,6 @@
 # registry-service
 
-The registry service is AgroPilot's source of farm and plot data. A farm has many plots, and each plot points to a crop, a soil and an emitter. Crops, soils and emitters are read-only catalogues, stored with the farms and plots in one database: a local SQLite file, `registry.db`, by default, or PostgreSQL when `DATABASE_URL` says so.
+The registry service is AgroPilot's source of farm and plot data. A farm has many plots, and each plot points to a crop, a soil and an emitter. Crops, soils and emitters are read-only catalogues, stored with the farms and plots in one database: a local SQLite file or PostgreSQL, chosen by the required `DATABASE_URL`.
 
 ## Prerequisites
 
@@ -18,7 +18,7 @@ Swagger UI: http://127.0.0.1:8000/docs
 
 ## Configuration (`DATABASE_URL`)
 
-The service reads `DATABASE_URL` from the environment or from a `.env` file. Copy the example to start: `cp .env.example .env`. A real environment variable beats `.env`. If neither is set, it uses the SQLite file `registry.db` next to `db.py`. Examples:
+The settings are read in `config.py` (pydantic-settings), from the environment or from a `.env` file next to `config.py`. Copy the example to start: `cp .env.example .env`. A real environment variable beats `.env`. `DATABASE_URL` is required, with no default. If it is missing, or its scheme is not `sqlite` or `postgresql` (a `+driver` suffix is allowed), the service refuses to start and names the variable; it never prints the value. A relative SQLite path such as `sqlite:///registry.db` is taken from the `services/registry-service` folder, wherever you start the service. `DATABASE_OWNER_URL` is optional: the setup/seed command and Postgres tests use it, and the API never does. Examples:
 
 ```
 DATABASE_URL=sqlite:///registry.db
@@ -62,7 +62,7 @@ All errors are `application/problem+json` (RFC 9457) with a `code` of VALIDATION
 
 ## Tests
 
-From `services/registry-service`: `uv run pytest` (SQLite: each test runs against a fresh copy of the database). Tests ignore `.env` and `DATABASE_URL`. With `TEST_DATABASE_URL` set they run on PostgreSQL instead (see above).
+From `services/registry-service`: `uv run pytest` (SQLite: each test runs against a fresh copy of the database). Tests set their own `DATABASE_URL` (a temp SQLite copy) and ignore `.env`. With `TEST_DATABASE_URL` set they run on PostgreSQL instead (see above).
 
 ## Performance
 

@@ -7,8 +7,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
-# Next to this file, so it is found from any working directory.
-ENV_FILE = Path(__file__).resolve().parent / ".env"
+# Next to this file, so the same paths are found from any working directory.
+SERVICE_DIR = Path(__file__).resolve().parent
+ENV_FILE = SERVICE_DIR / ".env"
 # SQLAlchemy backend names. "postgresql+psycopg" has backend "postgresql".
 ALLOWED_BACKENDS = ("sqlite", "postgresql")
 URL_RULE = "must start with sqlite:// or postgresql:// (a +driver suffix is allowed)"
@@ -20,13 +21,23 @@ class SettingsError(RuntimeError):
 
 def _check_url(value: SecretStr) -> SecretStr:
     try:
-        backend = make_url(value.get_secret_value()).get_backend_name()
+        url = make_url(value.get_secret_value())
     except ArgumentError:
         # make_url's own message contains the URL, so it is replaced here, not chained.
         raise ValueError(URL_RULE) from None
+    backend = url.get_backend_name()
     if backend not in ALLOWED_BACKENDS:
         raise ValueError(URL_RULE)
+    if backend == "sqlite" and _is_relative_file(url.database):
+        # A relative file name is taken from the service folder, not the working directory.
+        url = url.set(database=str(SERVICE_DIR / url.database))
+        return SecretStr(url.render_as_string(hide_password=False))
     return value
+
+
+def _is_relative_file(database: str | None) -> bool:
+    # None, "" and ":memory:" are in-memory databases. Absolute paths are kept as written.
+    return bool(database) and database != ":memory:" and not Path(database).is_absolute()
 
 
 class Settings(BaseSettings):

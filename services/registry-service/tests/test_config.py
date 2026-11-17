@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from sqlalchemy.engine import make_url
 
 import config
 import db
@@ -46,12 +47,57 @@ def test_bad_database_url_is_refused_without_printing_it(monkeypatch, tmp_path, 
     assert "secret" not in str(info.value)
 
 
-@pytest.mark.parametrize(
-    "url", ["sqlite:///registry.db", "postgresql://u:p@h/db", "postgresql+psycopg://u:p@h/db"]
-)
+@pytest.mark.parametrize("url", ["postgresql://u:p@h/db", "postgresql+psycopg://u:p@h/db"])
 def test_good_database_url_is_accepted(monkeypatch, tmp_path, url):
     monkeypatch.setenv("DATABASE_URL", url)
     assert load(no_env_file(tmp_path)).database_url.get_secret_value() == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "sqlite:////abs/registry.db",
+        "sqlite:///:memory:",
+        "sqlite://",
+        "postgresql+psycopg://registry_app:hunter2@127.0.0.1:5432/registry",
+    ],
+)
+def test_absolute_memory_and_postgres_urls_are_unchanged(monkeypatch, tmp_path, url):
+    monkeypatch.setenv("DATABASE_URL", url)
+    assert load(no_env_file(tmp_path)).database_url.get_secret_value() == url
+
+
+def test_relative_sqlite_path_resolves_to_the_service_folder(monkeypatch, tmp_path):
+    # Working directory is unrelated: the file must still land in the service folder.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///registry.db")
+    resolved = load(no_env_file(tmp_path)).database_url.get_secret_value()
+    assert resolved == f"sqlite:///{SERVICE_DIR / 'registry.db'}"
+
+
+def test_relative_owner_sqlite_path_resolves_to_the_service_folder(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATABASE_URL", "sqlite:////abs/registry.db")
+    monkeypatch.setenv("DATABASE_OWNER_URL", "sqlite:///owner.db")
+    owner = load(no_env_file(tmp_path)).database_owner_url.get_secret_value()
+    assert owner == f"sqlite:///{SERVICE_DIR / 'owner.db'}"
+
+
+def test_relative_sqlite_path_keeps_its_query(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///registry.db?mode=ro")
+    resolved = make_url(load(no_env_file(tmp_path)).database_url.get_secret_value())
+    assert resolved.database == str(SERVICE_DIR / "registry.db")
+    assert resolved.query == {"mode": "ro"}
+
+
+def test_relative_sqlite_path_resolves_from_another_process(tmp_path):
+    result = run_python(
+        "import config; print(config.settings.database_url.get_secret_value())",
+        tmp_path,
+        {"DATABASE_URL": "sqlite:///registry.db"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"sqlite:///{SERVICE_DIR / 'registry.db'}"
 
 
 def test_owner_url_is_optional_and_checked_when_set(monkeypatch, tmp_path):
