@@ -5,7 +5,7 @@ import uuid
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI
-from sqlalchemy import Connection, text
+from sqlalchemy import Connection
 from timezonefinder import TimezoneFinder
 
 from db import (
@@ -24,9 +24,11 @@ from db import (
     select_plots,
     sum_plot_area,
     update_farm_name,
+    SchemaMissing,
+    check_farms_table,
     update_plot_fields,
 )
-from errors import ApiError, register_error_handlers
+from errors import RETRY_AFTER_SECONDS, ApiError, register_error_handlers
 from models import (
     Crop,
     Emitter,
@@ -102,7 +104,16 @@ def write_plot(write: Callable[..., None], *args) -> None:
 
 @app.get("/health")
 def health(conn: Connection = Depends(get_db)) -> dict[str, str]:
-    conn.execute(text("SELECT 1 FROM farms LIMIT 1"))
+    try:
+        check_farms_table(conn)
+    except SchemaMissing:
+        # Reachable, but the schema is not set up: not ready yet, so retry later.
+        raise ApiError(
+            503,
+            "UNAVAILABLE",
+            "Database schema is missing: no farms table",
+            {"Retry-After": str(RETRY_AFTER_SECONDS)},
+        )
     return {"status": "ok"}
 
 

@@ -450,3 +450,15 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** a relative SQLite file (`sqlite:///registry.db`) resolves against `services/registry-service`, the folder of `config.py`, not the working directory. Absolute paths, `:memory:` and PostgreSQL URLs are unchanged.
 - **Why:** the folder is fixed, so the same `.env` works whether uvicorn, pytest or a debugger starts in another directory. Without it, a service started from the repo root opens a different file or answers 503 on every request.
 - **Research:** Django's tutorial (3.2, part 2) sets SQLite `NAME` to `BASE_DIR / 'db.sqlite3'` and says the file goes in the project directory: https://docs.djangoproject.com/en/3.2/intro/tutorial02/ . The `BASE_DIR` line itself comes from the project template and is not in that snippet; not re-checked. Checked here: a child process started in a temp folder with `sqlite:///registry.db` prints the service-folder path; absolute, `:memory:` and PostgreSQL values are unchanged (`tests/test_config.py`).
+
+### 74. /health returns 503 when the schema is missing
+- **AI suggested:** none for the status code. Option weighed: a bare `SELECT 1` ping, rejected because it reports healthy while every request fails on a missing table.
+- **I decided:** `/health` runs its farms-table check in `db.py` (`check_farms_table`). A reachable database without the `farms` table answers 503 `UNAVAILABLE`, `Retry-After: 30`, detail "Database schema is missing: no farms table". Connection failures keep the 503 "Database unavailable". Other errors keep 500.
+- **Why:** the service is up but not ready, the same case as a database that is down, so the same retry rule applies. Answering 200 would tell a load balancer to send traffic. A code bug stays 500.
+- **Research:** a missing table is SQLSTATE 42P01 (`undefined_table`) in Postgres, from the PostgreSQL error-code appendix. SQLite says "no such table" with no SQLSTATE. Tested on SQLite (`test_health_on_db_without_tables_is_503_schema_missing`); the Postgres branch is not run against a live database.
+
+### 75. The catch-all handler logs the traceback
+- **AI suggested:** none. Found by use: a 500 with no log to diagnose it.
+- **I decided:** the catch-all Exception handler logs the full traceback, with method and path, then returns the same 500 body. The non-temporary DB-error branch (also a 500) logs too, because it is the same silent case. The client body is unchanged.
+- **Why:** a 500 nobody can trace is not diagnosable. Logging server-side keeps the client body generic.
+- **Research:** the root logger has no handler, so ERROR records reach Python's last-resort stderr handler. uvicorn's default logging config configures its own loggers, not the root (from memory, not re-checked). Tests: caplog must show the traceback; the password must not appear in any log, response or record (this guard passed before and after, since nothing logs the URL).

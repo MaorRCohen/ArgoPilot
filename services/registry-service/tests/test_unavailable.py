@@ -17,14 +17,26 @@ def test_missing_db_file_returns_503_and_is_not_created(client, db_path, assert_
 
 
 @pytest.mark.sqlite_only
+def test_health_on_db_without_tables_is_503_schema_missing(client, db_path, assert_problem):
+    db_path.write_bytes(b"")  # reachable, but the schema is not set up
+
+    response = client.get("/health")
+
+    assert_problem(response, 503, "UNAVAILABLE")
+    assert response.headers["Retry-After"] == "30"
+    assert response.json()["detail"] == "Database schema is missing: no farms table"
+    assert "sqlite" not in response.text.lower()
+    assert "no such table" not in response.text
+
+
+@pytest.mark.sqlite_only
 def test_db_without_tables_returns_500_without_sqlite_text(client, db_path, assert_problem):
     db_path.write_bytes(b"")
 
-    for path in ["/health", "/v1/farms"]:
-        response = client.get(path)
+    response = client.get("/v1/farms")
 
-        assert_problem(response, 500, "UNAVAILABLE")
-        assert response.json()["detail"] == "Internal server error"
-        assert "Retry-After" not in response.headers
-        assert "sqlite" not in response.text.lower()
-        assert "no such table" not in response.text
+    assert_problem(response, 500, "UNAVAILABLE")
+    assert response.json()["detail"] == "Internal server error"
+    assert "Retry-After" not in response.headers
+    assert "sqlite" not in response.text.lower()
+    assert "no such table" not in response.text

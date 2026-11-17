@@ -89,6 +89,26 @@ def is_temporarily_unavailable(exc: DBAPIError | PoolTimeoutError) -> bool:
     return isinstance(exc, OperationalError)
 
 
+class SchemaMissing(Exception):
+    pass
+
+
+def is_missing_table(exc: DBAPIError) -> bool:
+    # SQLite: "no such table" (no SQLSTATE). Postgres: 42P01 undefined_table.
+    sqlstate = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+    return sqlstate == "42P01" or "no such table" in str(exc.orig)
+
+
+def check_farms_table(conn: Connection) -> None:
+    # Health probe. A missing table means the schema is not set up yet, not a code bug.
+    try:
+        conn.execute(text("SELECT 1 FROM farms LIMIT 1"))
+    except DBAPIError as exc:
+        if is_missing_table(exc):
+            raise SchemaMissing("no farms table") from exc
+        raise
+
+
 def normalize_row(row) -> dict:
     # Same JSON-ready values on every backend: date -> "YYYY-MM-DD", Decimal -> float, UUID -> str.
     out = {}

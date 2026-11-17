@@ -1,3 +1,4 @@
+import logging
 from http import HTTPStatus
 
 from fastapi import FastAPI, Request
@@ -8,6 +9,7 @@ from starlette.exceptions import HTTPException
 
 from db import is_temporarily_unavailable
 
+logger = logging.getLogger(__name__)
 PROBLEM_JSON = "application/problem+json"
 RETRY_AFTER_SECONDS = 30
 
@@ -52,6 +54,7 @@ def register_error_handlers(app: FastAPI) -> None:
             headers = {"Retry-After": str(RETRY_AFTER_SECONDS)}
             return problem(503, "UNAVAILABLE", "Database unavailable", headers)
         # Any other DB error (e.g. missing table, bad SQL) is a bug; retrying would not help.
+        logger.error("Database error that is not temporary", exc_info=exc)
         return problem(500, "UNAVAILABLE", "Internal server error")
 
     @app.exception_handler(RequestValidationError)
@@ -67,4 +70,6 @@ def register_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+        # The client gets the generic body; the traceback goes to the server log only.
+        logger.error("Unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
         return problem(500, "UNAVAILABLE", "Internal server error")
