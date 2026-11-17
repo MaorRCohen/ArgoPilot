@@ -5,14 +5,15 @@
 - Implement ONLY what the task spec lists. No extras (no pagination, created_at, CORS, logging, auth, Factory/Repository layers).
 - Explain each change in 2-3 lines so I can present it.
 - If you suggest something non-obvious, say so: I log decisions in docs/judgment-log.md.
+- Settings live only in `services/registry-service/config.py` (pydantic-settings). Never read or create a `.env` file.
 
 ## Current task: P1 Registry API
 Spec: https://github.com/alonitac/OzVeruach26/blob/main/tasks/p1_registry_api.md
 Service: services/registry-service (FastAPI, main.py at service root, run: `uv run uvicorn main:app --host 127.0.0.1 --port 8000`).
 
 ## Decisions (already made)
-- DB: SQLAlchemy Core (raw `text()` SQL, driver adapter only) chosen by `DATABASE_URL`: SQLite (default, file `registry.db` next to `db.py`) or PostgreSQL (`postgresql+psycopg://`). All DB access lives in `db.py` only.
-- `DATABASE_URL` comes from the environment or `.env` (`python-dotenv`, `override=False`: a real env var wins). Only `.env.example` is committed. Startup logs the scheme only (`sqlite` / `postgresql`), never the URL or password (logging added at the owner's request).
+- DB: SQLAlchemy Core (raw `text()` SQL, driver adapter only) chosen by the required `DATABASE_URL`: SQLite (`sqlite:///...`) or PostgreSQL (`postgresql+psycopg://`). All DB access lives in `db.py` only.
+- Settings are read only in `config.py` at startup: a real env var first, then `.env` next to `config.py`. `DATABASE_URL` is required; optional `DATABASE_OWNER_URL` is never used by the API. Both are `SecretStr`, read only in `db.py`. Only `.env.example` is committed. Startup logs the scheme only (`sqlite` / `postgresql`), never the URL or password (logging added at the owner's request).
 - Every SQLite connection runs `PRAGMA foreign_keys = ON`.
 - Schema comes from `seed_registry.sh` (do not change it). Reset data: `bash seed_registry.sh`.
 - `registry.db` is git-ignored.

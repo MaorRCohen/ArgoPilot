@@ -1,15 +1,14 @@
 import logging
-import os
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 from uuid import UUID
 
-from dotenv import find_dotenv, load_dotenv
 from sqlalchemy import Connection, Engine, create_engine, event, text
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError, TimeoutError as PoolTimeoutError
 from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
+
+from config import settings
 
 logger = logging.getLogger(__name__)
 if not logger.handlers:
@@ -17,15 +16,6 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
     logger.addHandler(logging.StreamHandler())
     logger.propagate = False  # own handler only: no duplicate line if the root logger is configured too
-
-DEFAULT_SQLITE_PATH = Path(__file__).parent / "registry.db"
-
-
-def database_url() -> str:
-    # override=False: a real environment variable beats .env. Unset or empty -> the SQLite file.
-    load_dotenv(find_dotenv(usecwd=True), override=False)
-    return os.environ.get("DATABASE_URL") or f"sqlite:///{DEFAULT_SQLITE_PATH}"
-
 
 def scheme_of(url: str) -> str:
     return make_url(url).get_backend_name()
@@ -58,7 +48,7 @@ def log_database(url: str) -> None:
     logger.info("Using database: %s", scheme_of(url))
 
 
-_url = database_url()
+_url = settings.database_url.get_secret_value()  # the only place the real URL is read
 engine: Engine = make_engine(_url)
 log_database(_url)
 

@@ -313,6 +313,7 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** A with two guards: log only the scheme at startup; `.env` git-ignored, only `.env.example` committed. A real environment variable wins (`override=False`).
 - **Why:** `.env` will hold a password. Tests set `DATABASE_URL` to a temp SQLite copy, never `registry.db`.
 - **Non-obvious consequence:** startup logging is an extra (CLAUDE.md says no logging); I asked for it.
+- **Superseded:** by #72. P2 requires pydantic-settings, so python-dotenv is removed.
 
 ### 54. Proving it works on Postgres (Q5)
 - **AI suggested:** A: one manual throwaway check against Docker Postgres, no test code in the repo.
@@ -417,3 +418,29 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **Later decision (full contract in prompts, no judges):** AI found the agent asks instead of building when the prompt is spec-silent. I decided to put the full contract in prompts 1-3 (count shape and 0 for no plots, crop and plot must exist, ordered by id, same fields as GET) and drop the judges (e1-7, e3-13), so every check is code. This supersedes decision (c). Why: evals should measure the conventions the skill teaches, and rule 7 (ask when silent) was already seen working in exercise 1.
 - **Environment:** moved Claude Code into WSL, since the Windows build denies scoped edits on `\\wsl.localhost` paths.
 - **Result:** 100% vs 100% (24 of 24 runs; every check passed in both configs). The skill shows no measurable effect, because the existing code (errors.py, get_farm_or_404, tests/) already teaches the conventions. I decided to stop here and document it. Next I would test a new empty service or a smaller model, where the skill should matter. Details in `services/registry-service/.claude/skills/registry-api/evals/results.md`.
+
+## Step 12 – P2 global configuration (pydantic-settings)
+
+### 69. Required DATABASE_URL, refuse to start (P2 decision 2)
+- **AI suggested:** none. The decision came from the owner's P2 instructions and was implemented as given.
+- **I decided:** `DATABASE_URL` is required, with no default. Its scheme must be `sqlite` or `postgresql`, with an optional `+driver`. A missing or bad value stops startup; the message names `DATABASE_URL` and never prints a value.
+- **Why:** the old default (`registry.db` next to `db.py`) could hide a missing setting: production would quietly open a local file. Failing at startup beats a 500 on the first request.
+- **Research:** pydantic's `ValidationError` text includes the rejected value, so `config.load_settings` builds its own message and raises with `from None`. Checked: a child process with `mysql://u:secret@h/db` exits 1 and prints no `secret`; removing `from None` in a scratch copy made that test fail. On temp copies: missing URL and bad scheme refuse to start; with Postgres unreachable the service starts and `/health` answers 503 with `Retry-After: 30`.
+
+### 70. Owner URL and two database roles (P2 decision 3)
+- **AI suggested:** none, as #69.
+- **I decided:** optional `DATABASE_OWNER_URL` with the same scheme check. Two Postgres roles: `registry_owner` creates and owns the tables (setup/seed command and Postgres tests only); `registry_app` gets only SELECT, INSERT, UPDATE and DELETE on them (the API's login). Nothing in `db.py` reads the owner URL.
+- **Why:** least privilege. Without ownership or DDL rights, a bug in the API cannot drop a table or change the schema.
+- **Research:** not run against Postgres yet. The roles and grants do not exist; the setup command that creates them is future work. The grant list is the design and must be checked when that command is written.
+
+### 71. Secrets as SecretStr (P2 decision 4)
+- **AI suggested:** none, as #69.
+- **I decided:** both URLs are `SecretStr`. The real value is read only in `db.py`, with `.get_secret_value()`, where the engine is created.
+- **Why:** `repr`, `str` and `model_dump_json` show `**********`, so a printed or logged settings object does not leak a password.
+- **Research:** `test_repr_and_dumps_hide_the_passwords` checks repr, str and model_dump_json for both URLs.
+
+### 72. .env path next to config.py (P2 decision 5)
+- **AI suggested:** none, as #69.
+- **I decided:** `ENV_FILE = Path(__file__).resolve().parent / ".env"`. Real environment variables still beat the file. `python-dotenv` is removed from `db.py`; this supersedes #53.
+- **Why:** a relative `.env` is found only when the process starts in the right folder. The absolute path works from any working directory, in the debugger and in pytest.
+- **Research:** tests pass a temp file to `load_settings(env_file=...)`, so they never depend on the real `.env`. Covered: env var beats file, file used when no env var, `ENV_FILE` is absolute and next to `config.py`. Not solved here: a relative path inside the URL (`sqlite:///registry.db`) still resolves against the working directory.
