@@ -43,3 +43,10 @@ Service: services/registry-service (FastAPI, main.py at service root, run: `uv r
 - Postgres run: seed the `registry_perf` database with `setup_db.py` (README commands), then start the server with `DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/registry_perf` and run the same k6 command.
 - Result 2026-11-10 (p95 farms list / by id / plots list / plot by id, all passed, 0 dropped): SQLite 28.2 / 29.1 / 29.0 / 30.6 ms; PostgreSQL 35.9 / 36.8 / 36.6 / 37.4 ms; old code 32.2 / 32.9 / 33.1 / 35.6 ms. The machine drifts (WSL, VS Code): compare runs only back-to-back, close other work first.
 - `results.txt` is committed as evidence for the PR. `tee` hides k6's exit code, so read pass/fail from the ✓/✗ marks in the summary.
+## P2 weather-service (services/weather-service)
+Spec: `~/course/OzVeruach26/tasks/p2.md`, section "The weather-service" (FR-2.3..FR-2.8, NFR-2.3). FastAPI on port 8001, `main.py` at the service root, run: `uv run uvicorn main:app --host 127.0.0.1 --port 8001`. Same rules as above: settings only in its `config.py` (never read or create `.env`), services never import each other's code, no extras.
+- This service is the ONLY retry point in the chain (3 attempts, jittered backoff, 4 s budget). Callers must not retry it: planner-service calls it once, no retries, with a timeout a bit above 4 s (for example 5 s).
+- Open-Meteo's field names, units and request live in `provider.py` only. Anything wrong in an answer is a provider failure: never zeros, never defaults (FR-2.8). `rain_mm = rain_sum + showers_sum` (liquid water only, no snow).
+- Cache: memory only, one LRU dict per grid cell (`fetched_at` decides freshness, request order decides eviction). Fresh 3 h, max stale 24 h, single-flight per cell, 30 s cooldown after a failed cell. Reasons: service README and judgment log entries 91-102.
+- Frontend (later): show the forecast age from `fetched_at`, and a stronger warning when it is older than 6 h.
+- Tests: `uv run pytest` from `services/weather-service`. No internet: the provider is an `httpx.MockTransport`, time is frozen with time-machine. The dev dependency `httpx2` is only for Starlette's TestClient.

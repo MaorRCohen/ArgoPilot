@@ -544,3 +544,77 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **Correction (open):** the pool already exists, so this decision needs a different cause first. Next step: run SQLite and PostgreSQL back-to-back in one session, on the same seeded data, to separate host drift from the database cost.
 - **Why:** one run on another day (2026-11-17) is not comparable to the SQLite runs of 2026-11-03 and 2026-11-10. Entry 62 shows a same-code run going from 27 to 58 ms within one session, so the gap may be host drift, not PostgreSQL.
 - **Research:** from memory, not re-checked online: SQLAlchemy 2.0 uses QueuePool for non-SQLite engines by default; `pool_pre_ping` sends a `SELECT 1` on each checkout.
+
+## Step 17 – weather-service (FR-2.3 to FR-2.8)
+
+### 91. Rain is rain_sum + showers_sum
+- **AI suggested:** rounding the sum to 2 decimals. The rule itself is the owner's.
+- **I decided:** `rain_mm = rain_sum + showers_sum`: liquid water only, no snow.
+- **Why:** `precipitation_sum` counts snowfall, and in a system for the whole world snow does not reach the soil that day. `rain_sum` alone misses showers, which matter in warm climates. The rounding removes float noise (`0.2 + 0.1`) and loses nothing: the provider's values have 1 or 2 decimals.
+- **Research:** Open-Meteo docs (read 2026-11-17): hourly `rain` is "rain from large scale weather systems", `showers` is "showers from convective precipitation", `precipitation` is "rain, showers, snow". One real call (2026-11-18, Israel): `showers_sum` was 0.15 mm on a day with `rain_sum` 0.0, so `rain_sum` does not contain the showers and the sum does not count them twice. Test: `tests/test_provider.py` (`precipitation_sum` and `snowfall_sum` in the body are ignored).
+
+### 92. timezone=auto, precipitation_unit=mm, and every response validated
+- **AI suggested:** to find "today at the point" when a cached forecast is served later, use the `utc_offset_seconds` that comes with the forecast. No time zone database and no new package. It can be one hour off around local midnight on the two days a year when the clocks change (no test covers that).
+- **I decided:** always send `timezone=auto` and `precipitation_unit=mm`. Check every response. A timeout, a non-2xx status, a body that is not JSON, a missing field, any null, a value that is not a number or is negative, a unit that is not `mm`, lists of different length, a wrong number of days, dates that are not consecutive: all are a provider failure.
+- **Why:** `timezone=auto` gives local days anywhere in the world, so "today" is the grower's today. A forecast of zeros reads as "no water needed", the worst bug in the system (FR-2.8), so nothing is guessed.
+- **Research:** Open-Meteo docs: `timezone=auto` "resolves the time zone from the coordinates" and sets the daily boundaries. One real call (2026-11-18): the answer starts on the local date (2026-11-18, fetched at 00:04 in Israel), `utc_offset_seconds` is 7200, all three units are `mm`, every list has 8 values, and the answer passed the validation. Tests: 87 in `tests/test_provider.py`, one for each kind of bad answer and each field. A mutation check (null as zero, `true` as 1 mm, no unit check) made them fail.
+
+### 93. Always fetch 8 days, slice per request
+- **AI suggested:** none. The owner decided this before the build.
+- **I decided:** every fetch asks for 8 days (`FORECAST_FETCH_DAYS`). Each request gets `days` days cut from today at the point.
+- **Why:** one forecast per cell serves any `days` from 1 to 7. A forecast up to 24 h old still covers today + 7 days, even after a local midnight.
+- **Research:** the config refuses a value under 7. A forecast that does not cover today + `days` is never served, fresh or stale: with 7 days fetched, the service fetches again after local midnight (`test_a_fresh_forecast_that_no_longer_covers_the_days_is_fetched_again`).
+
+### 94. The grid: floor with epsilon, whole-number key, cell centre, clamp
+- **AI suggested:** none for the grid. The AI checked the epsilon premise (see Research).
+- **I decided:** key = `(floor(lat * 10 + 1e-9), floor(lon * 10 + 1e-9))` as whole numbers. The provider is asked about the cell centre, `(key + 0.5) / 10`, clamped to [-90, 90] and [-180, 180].
+- **Why:** whole numbers are safe dict keys. The centre stands for the whole cell. The clamp is needed because the cell that starts at lat 90 or lon 180 has its middle outside the globe.
+- **Research:** checked with a script (2026-11-18): `31.3 * 10` is exactly `313.0` in Python, and typed one-decimal values never land in the wrong cell. The epsilon is needed for computed coordinates: `0.1` added 8 times is `0.7999999999999999`, `-898 * 0.1` is `-89.80000000000001`. Without the epsilon 417 of the 3601 values `k * 0.1` (k from -1800 to 1800) fall one cell too low; with it none. Tests: `tests/test_grid.py` (26). With the epsilon switched off, exactly the four float-error tests fail.
+
+### 95. Max stale age 24 h, and a stronger warning in the frontend after 6 h
+- **AI suggested:** none. The owner decided this before the build.
+- **I decided:** a forecast of 24 h or older is never served, not even as stale: 503. The frontend (later) shows the forecast's age from `fetched_at` and warns more strongly when it is older than 6 h.
+- **Why:** a forecast one day old is, for any day, a forecast with one more day of lead. In the study a day of lead costs about 0.04 mm/day of error, little next to the 0.7 to 0.95 mm/day already accepted. Older than that, the forecast no longer covers day 7.
+- **Research:** UC Davis (eScholarship), ET0 forecasts from the National Blend of Models: RMSE 0.70 / 0.79 / 0.95 mm/day at 1 / 3 / 7 days ahead, https://escholarship.org/uc/item/6sb9r80k. A web search matched the owner's numbers to this paper, but only the abstract text came back: fetching the page returned nothing, so the full paper was not read. "About 0.04 mm/day per day of lead" is the AI's own arithmetic on the three numbers, not a result of the study.
+
+### 96. Retries: jittered backoff, 1.5 s per attempt, 4 s in total
+- **AI suggested:** two details inside the owner's rule. (1) Each attempt is also cut off with `asyncio.timeout`, because httpx's timeouts are per step: a provider that sends one byte at a time could hold an attempt for ever. (2) "A meaningful timeout" is half of `PROVIDER_TIMEOUT_S` (0.75 s): a retry that cannot get that after its wait is not started, and the last attempt gets only the time that is left.
+- **I decided:** 2 retries (3 attempts), 1.5 s per attempt, a wait of random(0, 0.2 s × 2^n) before retry n (full jitter), 4 s for everything. The budget is checked before every attempt.
+- **Why:** the grower waits about 5 s at most, so one fetch must end in under 4 s. Jitter keeps the retries of many callers from landing together.
+- **Research:** AWS Builders' Library, "Timeouts, retries, and backoff with jitter" (Marc Brooker): https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/. It also says client errors (4xx) are not worth retrying. The owner's rule retries every failure, so a 4xx is called 3 times; the budget bounds the cost. Open question, not changed. Tests: `tests/test_provider_retries.py` (18): the cut-off, and the 3.2 s and 4.0 s timelines.
+
+### 97. One retry point
+- **AI suggested:** none. The owner decided this before the build.
+- **I decided:** `weather-service` is the only place in the chain that retries. `planner-service` calls it once, without retries, with a timeout a bit above 4 s.
+- **Why:** retries on several layers multiply: 3 attempts in 3 layers is 27 calls to the provider for one request, and the grower waits for all of them.
+- **Research:** the same AWS article calls retries "selfish" and warns that they multiply across layers (the second point from memory, not re-checked). The rule is written in `CLAUDE.md` and in the service README.
+
+### 98. Single-flight, and one outcome for every waiter
+- **AI suggested:** `asyncio.shield` around the shared call, so a caller that hangs up does not cancel the call the others wait for. A done-callback marks the task's exception as read, so no "exception was never retrieved" warning is printed.
+- **I decided:** concurrent requests for one cell share one provider call (one asyncio task per cell). All of them get its outcome (fresh, stale or 503). A waiter never starts retries of its own.
+- **Why:** when a forecast expires, many requests arrive together. Without sharing, 20 requests are 20 provider calls, and on a failure 20 × 3.
+- **Research:** tests: 20 concurrent requests make 1 provider call (3 on a failure: one call and its two retries), at service level (deterministic) and over HTTP (threads). A mutation check without `shield`, or without the sharing, made them fail.
+
+### 99. 30 s failure cooldown and Retry-After
+- **AI suggested:** none. The owner decided this before the build.
+- **I decided:** after a cell failed (all retries), the provider is not called for that cell for 30 s: the answer is stale or 503 at once. The 503 has `Retry-After` = the seconds left of the cooldown, or the whole cooldown if the cell has none.
+- **Why:** a down provider would make every request wait the whole 4 s and call it 3 times. `Retry-After` tells the caller when trying again can work.
+- **Research:** `Retry-After` is a number of seconds (RFC 9110, section 10.2.3; from memory, not re-checked). Tests: 12 s into the cooldown the 503 says 18; 29 s says 1; at 30 s the provider is called again. The cooldown is per cell.
+
+### 100. Stale-while-revalidate rejected
+- **AI suggested:** none. Considered and rejected by the owner: serve the old forecast at once after 3 h and refresh it in the background.
+- **I decided:** rejected. After 3 h the next request calls the provider and waits for the answer.
+- **Why:** it conflicts with FR-2.5 (a forecast is fresh for 3 h, then the provider is called) and FR-2.6 (`stale: true` means the provider failed). A background refresh would hand out a forecast older than 3 h as if it were fine, or need a third state.
+- **Research:** none.
+
+### 101. One LRU dict with two clocks
+- **AI suggested:** none. The owner decided this before the build.
+- **I decided:** one `OrderedDict`: cell → forecast with its `fetched_at`. `fetched_at` (it changes only on a new provider call) decides if a forecast is fresh. The order (a request moves its cell to the end) decides which cell goes first when the 10,000 cells are full. Cells older than 24 h are deleted when a new forecast is stored and when their own cell is requested.
+- **Why:** two lists (by age, by use) must be kept in step; one dict cannot disagree with itself.
+- **Research:** tests: the least recently requested cell is evicted and a request moves its cell to the end (without that, the oldest fetch would go); the cache never holds more than the cap; expired cells are deleted (the last two read `_cache`, the only tests that look inside).
+
+### 102. Observer/notifications rejected, in the backlog
+- **AI suggested:** none. Considered and rejected by the owner: an Observer that tells the grower when a new forecast changes the plan.
+- **I decided:** not built. The idea is one line in the root README Backlog.
+- **Why:** everything is request/response today, and nothing in the spec needs a push.
+- **Research:** none.
