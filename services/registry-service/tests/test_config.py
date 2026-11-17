@@ -92,7 +92,7 @@ def test_relative_sqlite_path_keeps_its_query(monkeypatch, tmp_path):
 
 def test_relative_sqlite_path_resolves_from_another_process(tmp_path):
     result = run_python(
-        "import config; print(config.settings.database_url.get_secret_value())",
+        "import config; print(config.get_settings().database_url.get_secret_value())",
         tmp_path,
         {"DATABASE_URL": "sqlite:///registry.db"},
     )
@@ -108,6 +108,51 @@ def test_owner_url_is_optional_and_checked_when_set(monkeypatch, tmp_path):
     with pytest.raises(config.SettingsError, match="DATABASE_OWNER_URL") as info:
         load(no_env_file(tmp_path))
     assert "secret" not in str(info.value)
+
+
+def test_test_database_url_is_optional(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///registry.db")
+    monkeypatch.delenv("TEST_DATABASE_URL", raising=False)
+    assert load(no_env_file(tmp_path)).test_database_url is None
+
+
+def test_empty_test_database_url_means_unset(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///registry.db")
+    monkeypatch.setenv("TEST_DATABASE_URL", "")
+    assert load(no_env_file(tmp_path)).test_database_url is None
+
+
+def test_test_database_url_is_read_from_the_env_file(monkeypatch, tmp_path):
+    env_file = tmp_path / "test.env"
+    env_file.write_text("TEST_DATABASE_URL=postgresql+psycopg://u:p@127.0.0.1:5432/registry_test\n")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///registry.db")
+    monkeypatch.delenv("TEST_DATABASE_URL", raising=False)
+    value = load(env_file).test_database_url.get_secret_value()
+    assert value == "postgresql+psycopg://u:p@127.0.0.1:5432/registry_test"
+
+
+def test_real_env_var_beats_env_file_for_test_database_url(monkeypatch, tmp_path):
+    env_file = tmp_path / "test.env"
+    env_file.write_text("TEST_DATABASE_URL=sqlite:////from/dotenv_test.db\n")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///registry.db")
+    monkeypatch.setenv("TEST_DATABASE_URL", "sqlite:////from/env_test.db")
+    assert load(env_file).test_database_url.get_secret_value() == "sqlite:////from/env_test.db"
+
+
+def test_test_database_url_is_scheme_checked_without_printing_it(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///registry.db")
+    monkeypatch.setenv("TEST_DATABASE_URL", "mysql://u:secret@h/db_test")
+    with pytest.raises(config.SettingsError, match="TEST_DATABASE_URL") as info:
+        load(no_env_file(tmp_path))
+    assert "secret" not in str(info.value)
+
+
+def test_test_database_url_is_hidden_in_repr_and_dumps(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///registry.db")
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql+psycopg://u:hunter4@127.0.0.1:5432/registry_test")
+    settings = load(no_env_file(tmp_path))
+    for text in (repr(settings), str(settings), settings.model_dump_json()):
+        assert "hunter4" not in text
 
 
 def test_repr_and_dumps_hide_the_passwords(monkeypatch, tmp_path):
@@ -145,7 +190,8 @@ def test_service_refuses_to_start_with_a_bad_url_and_does_not_print_it(tmp_path)
     output = result.stdout + result.stderr
     assert result.returncode != 0
     assert "DATABASE_URL" in output
-    assert "secret" not in output
+    # The traceback shows source lines (which contain "get_secret_value"), so match the credentials only.
+    assert "u:secret" not in output
 
 
 def test_startup_log_is_visible_at_import_and_has_scheme_only(tmp_path):

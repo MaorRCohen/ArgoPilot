@@ -9,6 +9,17 @@ import pytest
 import time_machine
 from fastapi.testclient import TestClient
 
+from config import SettingsError, load_settings
+
+# Read the real settings BEFORE the override below: the guard compares TEST_DATABASE_URL with the real
+# DATABASE_URL. Nothing is connected here. Without any DATABASE_URL there is nothing to collide with.
+try:
+    REAL_SETTINGS = load_settings()
+except SettingsError as exc:
+    if "DATABASE_URL: missing" not in str(exc):
+        raise
+    REAL_SETTINGS = None
+
 # Must run before `import db` / `import main`: db.py builds its engine at import. A real env var beats .env,
 # so tests can never reach the real registry.db or a real Postgres through a developer's .env.
 os.environ["DATABASE_URL"] = f"sqlite:///{Path(tempfile.mkdtemp(prefix='registry-test-')) / 'registry.db'}"
@@ -16,9 +27,15 @@ os.environ["DATABASE_URL"] = f"sqlite:///{Path(tempfile.mkdtemp(prefix='registry
 import db  # noqa: E402
 from main import app  # noqa: E402
 from setup_db import run_setup  # noqa: E402
-from tests.pg_guard import assert_safe_to_wipe  # noqa: E402
+from tests.pg_guard import UnsafeTestDatabase, assert_safe_to_wipe, check_test_database  # noqa: E402
 
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")  # set -> Postgres mode
+# Postgres mode when TEST_DATABASE_URL is set (real environment or .env; an empty value means unset).
+APP_DATABASE_URL = REAL_SETTINGS.database_url.get_secret_value() if REAL_SETTINGS is not None else None
+TEST_DATABASE_URL = (
+    REAL_SETTINGS.test_database_url.get_secret_value()
+    if REAL_SETTINGS is not None and REAL_SETTINGS.test_database_url is not None
+    else None
+)
 
 SERVICE_DIR = Path(__file__).parent.parent
 SEED_SCRIPT = SERVICE_DIR / "seed_registry.sh"
@@ -29,6 +46,11 @@ NOW = datetime(2026, 11, 3, 22, 0, tzinfo=UTC)
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "postgres_only: needs TEST_DATABASE_URL (a local Postgres test database)")
+    if TEST_DATABASE_URL:
+        try:
+            check_test_database(TEST_DATABASE_URL, APP_DATABASE_URL)
+        except UnsafeTestDatabase as exc:
+            pytest.exit(f"Refusing to run the tests: {exc} No database was touched.", returncode=2)
 
 
 def pytest_collection_modifyitems(config, items):

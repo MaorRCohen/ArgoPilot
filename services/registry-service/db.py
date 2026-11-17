@@ -8,7 +8,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError, Timeout
 from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
 
-from config import settings
+from config import get_settings
 
 logger = logging.getLogger(__name__)
 if not logger.handlers:
@@ -48,7 +48,7 @@ def log_database(url: str) -> None:
     logger.info("Using database: %s", scheme_of(url))
 
 
-_url = settings.database_url.get_secret_value()  # the only place the real URL is read
+_url = get_settings().database_url.get_secret_value()  # the only place the real URL is read
 engine: Engine = make_engine(_url)
 log_database(_url)
 

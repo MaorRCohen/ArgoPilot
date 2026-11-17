@@ -44,17 +44,19 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ENV_FILE, extra="ignore")
 
     database_url: SecretStr
-    # Only the setup/seed command and Postgres tests use it. The API never reads it.
+    # Only the setup/seed command uses it. The API never reads it.
     database_owner_url: SecretStr | None = None
+    # Only the Postgres test run uses it. Its name must end with _test (tests/pg_guard.py checks that).
+    test_database_url: SecretStr | None = None
 
     @field_validator("database_url")
     @classmethod
     def _check_database_url(cls, value: SecretStr) -> SecretStr:
         return _check_url(value)
 
-    @field_validator("database_owner_url")
+    @field_validator("database_owner_url", "test_database_url")
     @classmethod
-    def _check_database_owner_url(cls, value: SecretStr | None) -> SecretStr | None:
+    def _check_optional_url(cls, value: SecretStr | None) -> SecretStr | None:
         if value is None or not value.get_secret_value():  # empty counts as not set
             return None
         return _check_url(value)
@@ -77,4 +79,12 @@ def load_settings(env_file: Path = ENV_FILE) -> Settings:
         ) from None
 
 
-settings = load_settings()
+_settings: Settings | None = None
+
+
+def get_settings() -> Settings:
+    # Read on first use, not at import: conftest reads the real values before it overrides DATABASE_URL.
+    global _settings
+    if _settings is None:
+        _settings = load_settings()
+    return _settings

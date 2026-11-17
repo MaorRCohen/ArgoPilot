@@ -27,6 +27,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.engine import Connection, Engine
 
+from config import SettingsError, get_settings
+
 # Same logical types as seed_registry.sh: SQLite REAL, PostgreSQL double precision.
 Real = Float().with_variant(REAL(), "sqlite")
 
@@ -162,8 +164,8 @@ def run_setup(url: str) -> dict[str, int]:
 
 def main() -> int:
     try:
-        from config import settings  # also checks DATABASE_URL, which config requires
-    except Exception as exc:  # config's SettingsError: it names the variable and never prints values
+        settings = get_settings()  # also checks DATABASE_URL, which config requires
+    except SettingsError as exc:  # names the variable and never prints a value
         print(exc, file=sys.stderr)
         return 1
     if settings.database_owner_url is None:

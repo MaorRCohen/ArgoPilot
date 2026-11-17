@@ -499,3 +499,38 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 ### 83. A missing owner URL is tested with an empty value
 - **I decided:** the subprocess test sets `DATABASE_OWNER_URL=""`, not unset.
 - **Why:** an unset variable would let pydantic-settings read the real `.env`, so the test could reach the real database. An empty value overrides the file, and `config.py` reads it as "not set". The test checks the exit code, that the message names the variable, and that the password from `DATABASE_URL` never appears in the output.
+
+## Step 14 – Postgres test database (registry_test)
+
+### 84. The Postgres tests use a separate registry_test database
+- **AI suggested:** a separate `registry_test` database. Options weighed: Testcontainers (needs Docker and a new package) and per-test rollback (our tests use several connections and commit, so a rollback cannot undo them).
+- **I decided:** `registry_test`, owned by `registry_owner`, the same owner as `registry`. No third role.
+- **Why:** the suite wipes the schema before every test. A separate database keeps that away from `registry`, and needs neither Docker nor a new package.
+
+### 85. The test database name must end with _test
+- **I decided:** `TEST_DATABASE_URL`'s database name must end with `_test` and differ from `DATABASE_URL`'s name. The run stops with exit code 2 in `pytest_configure`, before any database is touched. The message states the rule and never the URL.
+- **Why:** the name alone does not catch a URL that ends in `_test` but points at the app's database; the comparison does. Like Django's `test_` prefix, the name marks the database as a test one.
+- **Research:** Django's test runner creates its test database with a `test_` prefix by default (from memory, not re-checked). Tests: `tests/test_pg_guard.py` (rejects `registry`, `test_registry`, `registry_testing` and the same database as the app; accepts `registry_test`); one subprocess run checks exit code 2 and that the password is not printed.
+
+### 86. TEST_DATABASE_URL in .env, read through config
+- **I decided:** the tests read `TEST_DATABASE_URL` from `config.py`, so `.env` works, and a real environment variable overrides it. An empty value means unset: `TEST_DATABASE_URL= uv run pytest` skips PostgreSQL for one run.
+- **Why:** no password is typed on the command line or kept in shell history. The same rule as `DATABASE_OWNER_URL`.
+- **Limit:** without a `DATABASE_URL` (in `.env` or the environment) the tests cannot read `TEST_DATABASE_URL`, so they run on SQLite and skip PostgreSQL.
+- **Research:** `tests/test_config.py` covers unset, empty, `.env` and env-beats-file for the new variable.
+
+### 87. Settings load on first use, not at import
+- **I decided:** `config.py` loads settings in `get_settings()`, on first use. The module no longer loads at import.
+- **Why:** conftest must read the real `DATABASE_URL` before it overrides it for the tests. An import-time load would have already read the override. The app still fails at startup: `db.py` calls `get_settings()` when it is imported.
+- **Research:** `setup_db.py` and `db.py` use the same function. One test narrowed: the subprocess check for a bad URL now matches the credentials (`u:secret`), because the traceback shows a source line that contains `get_secret_value`.
+
+## Step 15 – Startup check and backlog
+
+### 88. Fail-fast at startup still holds with lazy settings
+- **I decided:** no code change. The service still refuses to start with a missing or bad `DATABASE_URL`.
+- **Why:** `main.py` imports `db` at the top, and `db.py` calls `get_settings()` at import. So `uvicorn main:app` loads and validates the settings before it serves a request.
+- **Research:** ran `uvicorn main:app` from a temp copy of the code files (no `.env` copied). `DATABASE_URL` unset: exit 1, "DATABASE_URL: missing". Bad scheme: exit 1, the scheme rule, and the password does not appear. Valid SQLite control: "Application startup complete". The existing test `test_service_refuses_to_start_with_a_bad_url_and_does_not_print_it` covers the same path through `import db`.
+
+### 89. Feature ideas outside the task go to a README Backlog
+- **AI suggested:** none. The instructor's rule.
+- **I decided:** the root `README.md` has a "## Backlog" section. Each idea is one bullet: what it is and what it needs. Nothing is implemented.
+- **Why:** the instructor's rule. It keeps the P2 scope fixed and keeps the ideas in one place.

@@ -18,7 +18,7 @@ Swagger UI: http://127.0.0.1:8000/docs
 
 ## Configuration (`DATABASE_URL`)
 
-The settings are read in `config.py` (pydantic-settings), from the environment or from a `.env` file next to `config.py`. Copy the example to start: `cp .env.example .env`. A real environment variable beats `.env`. `DATABASE_URL` is required, with no default. If it is missing, or its scheme is not `sqlite` or `postgresql` (a `+driver` suffix is allowed), the service refuses to start and names the variable; it never prints the value. A relative SQLite path such as `sqlite:///registry.db` is taken from the `services/registry-service` folder, wherever you start the service. `DATABASE_OWNER_URL` is optional: only the setup command (`setup_db.py`) uses it, and the API never does. Examples:
+The settings are read in `config.py` (pydantic-settings), from the environment or from a `.env` file next to `config.py`. Copy the example to start: `cp .env.example .env`. A real environment variable beats `.env`. `DATABASE_URL` is required, with no default. If it is missing, or its scheme is not `sqlite` or `postgresql` (a `+driver` suffix is allowed), the service refuses to start and names the variable; it never prints the value. A relative SQLite path such as `sqlite:///registry.db` is taken from the `services/registry-service` folder, wherever you start the service. `DATABASE_OWNER_URL` is optional: only the setup command (`setup_db.py`) uses it, and the API never does. `TEST_DATABASE_URL` is optional: only the PostgreSQL test run uses it (see [Run the tests on PostgreSQL](#run-the-tests-on-postgresql)). Examples:
 
 ```
 DATABASE_URL=sqlite:///registry.db
@@ -66,7 +66,7 @@ For tests and local runs, start a throwaway one in Docker (bound to localhost on
 docker run -d --name registry-postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=registry_test -p 127.0.0.1:5432:5432 postgres:16
 ```
 
-Run the same test suite on it (without `TEST_DATABASE_URL`, `uv run pytest` runs on SQLite): `TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/registry_test uv run pytest`. The tests drop and recreate the `public` schema before every test, so they refuse to run unless the host is `localhost` or `127.0.0.1` and the database name contains `test`.
+To run the tests on this container, put `TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/registry_test` in `.env` and follow [Run the tests on PostgreSQL](#run-the-tests-on-postgresql).
 
 The tests create their own tables with `setup_db.py`'s code. The API never creates or changes tables: only `setup_db.py` does.
 
@@ -77,6 +77,16 @@ docker exec registry-postgres psql -U postgres -c "CREATE DATABASE registry_perf
 DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/registry_perf DATABASE_OWNER_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/registry_perf uv run python setup_db.py
 DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/registry_perf uv run uvicorn main:app --host 127.0.0.1 --port 8000
 ```
+
+## Run the tests on PostgreSQL
+
+The tests can also run on PostgreSQL. Before every test they wipe the database's `public` schema, so use a database that only the tests use:
+
+1. Once, as the `postgres` user: `sudo -u postgres psql -c "CREATE DATABASE registry_test OWNER registry_owner;"`
+2. Add to `.env`: `TEST_DATABASE_URL=postgresql+psycopg://registry_owner:<owner-password>@127.0.0.1:5432/registry_test`
+3. From `services/registry-service`: `uv run pytest`. Without `TEST_DATABASE_URL` the Postgres tests are skipped and the rest run on SQLite.
+
+Before any database is touched, the run stops with exit code 2 if the database name does not end with `_test`, or if it is the same database as `DATABASE_URL`. The message never shows a URL. The wipe also refuses any host other than `localhost` or `127.0.0.1`. To skip PostgreSQL for one run without editing `.env`: `TEST_DATABASE_URL= uv run pytest`.
 
 ## Endpoints
 
