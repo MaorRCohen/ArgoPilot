@@ -15,13 +15,13 @@ os.environ["DATABASE_URL"] = f"sqlite:///{Path(tempfile.mkdtemp(prefix='registry
 
 import db  # noqa: E402
 from main import app  # noqa: E402
+from setup_db import run_setup  # noqa: E402
 from tests.pg_guard import assert_safe_to_wipe  # noqa: E402
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")  # set -> Postgres mode
 
 SERVICE_DIR = Path(__file__).parent.parent
 SEED_SCRIPT = SERVICE_DIR / "seed_registry.sh"
-SEED_PG = SERVICE_DIR / "seed_registry_pg.sql"
 
 # Every test runs at this moment. It is 22:00 UTC on Nov 3: already Nov 4 in Tokyo, still Nov 3 in London.
 NOW = datetime(2026, 11, 3, 22, 0, tzinfo=UTC)
@@ -75,7 +75,7 @@ def backend(request, monkeypatch):
     engine = db.make_engine(TEST_DATABASE_URL)
     with engine.begin() as conn:
         conn.exec_driver_sql("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
-        conn.exec_driver_sql(SEED_PG.read_text())
+    run_setup(TEST_DATABASE_URL)  # the same tables and seed rows as setup_db.py
     monkeypatch.setattr(db, "engine", engine)
     yield
     engine.dispose()

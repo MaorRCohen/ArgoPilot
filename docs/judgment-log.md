@@ -462,3 +462,40 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** the catch-all Exception handler logs the full traceback, with method and path, then returns the same 500 body. The non-temporary DB-error branch (also a 500) logs too, because it is the same silent case. The client body is unchanged.
 - **Why:** a 500 nobody can trace is not diagnosable. Logging server-side keeps the client body generic.
 - **Research:** the root logger has no handler, so ERROR records reach Python's last-resort stderr handler. uvicorn's default logging config configures its own loggers, not the root (from memory, not re-checked). Tests: caplog must show the traceback; the password must not appear in any log, response or record (this guard passed before and after, since nothing logs the URL).
+
+## Step 13 – P2 setup command (FR-2.2)
+
+### 76. Setup as a Python script with SQLAlchemy, not psql or Alembic
+- **AI suggested:** a Python setup script via SQLAlchemy.
+- **I decided:** `services/registry-service/setup_db.py`, run as `uv run python setup_db.py`. All of its DB work goes through SQLAlchemy Core. It is the only DB code outside `db.py` (CLAUDE.md updated).
+- **Why:** psql with a `.sql` file bypasses SQLAlchemy, needs a URL conversion, and keeps a second copy of the seed data. Alembic is more tooling than a schema that does not change yet. A `[project.scripts]` short command needs a build system, so it was rejected.
+
+### 77. Idempotent: create what is missing, insert what is missing
+- **I decided:** `create_all(checkfirst=True)`, then `INSERT ... ON CONFLICT (id) DO NOTHING` on both PostgreSQL and SQLite. Nothing is deleted or overwritten.
+- **Why:** a second run changes nothing. Keying on `id` means a name clash with another id (`UNIQUE(farm_id, name)`) still fails, instead of being skipped silently.
+
+### 78. All or nothing, including the tables
+- **I decided:** one transaction. On SQLite, `CREATE TABLE` commits by itself under Python's default sqlite3 mode, so `setup_db.py` turns that off and lets SQLAlchemy's begin event issue `BEGIN`.
+- **Why:** the first version left five empty tables after a forced failure; `test_failure_in_the_middle_saves_nothing` caught it. PostgreSQL already runs DDL inside a transaction.
+
+### 79. Row counts printed, not checked against 15
+- **I decided:** print the count per table and the total. A failed run exits 1 with one line, no traceback.
+- **Why:** after the API adds farms and plots, a rerun has more than 15 rows, and a fixed check would fail a valid run. The test checks the 15 on an empty database.
+
+### 80. Same schema as seed_registry.sh, with one difference
+- **I decided:** the same tables, columns, foreign keys and `UNIQUE(farm_id, name)`. Reals are `REAL` on SQLite and `FLOAT` (double precision) on PostgreSQL. `planting_date` is `TEXT` on both; the old `seed_registry_pg.sql` used `DATE` and `NUMERIC` lat/lon, which are gone.
+- **Why:** one definition for both databases, with the same logical types as the SQLite seed.
+- **Difference:** primary-key columns are NOT NULL. The SQLite seed allows NULL in a `TEXT PRIMARY KEY` (a SQLite quirk); PostgreSQL always enforces NOT NULL on a primary key.
+- **Research:** `PRAGMA table_info`, `foreign_key_list` and `index_list` on a copy of the seed vs the setup output: identical except the primary-key NOT NULL. The PostgreSQL DDL was compiled offline, not run.
+
+### 81. The seed rows are typed twice, so a test compares them
+- **I decided:** `test_same_rows_as_seed_registry_sh` runs `seed_registry.sh` in a temp folder and compares every row and column name with `setup_db.py`'s output.
+- **Why:** the 15 rows live in the SQL script and in Python. The test fails when one changes without the other.
+
+### 82. The Postgres test suite is seeded by setup_db
+- **I decided:** `tests/conftest.py` calls `run_setup` after dropping `public`. `seed_registry_pg.sql` is deleted.
+- **Why:** one seed path for tests, the perf database and production. Not run here: the Postgres suite needs a live test database, and the owner runs that.
+
+### 83. A missing owner URL is tested with an empty value
+- **I decided:** the subprocess test sets `DATABASE_OWNER_URL=""`, not unset.
+- **Why:** an unset variable would let pydantic-settings read the real `.env`, so the test could reach the real database. An empty value overrides the file, and `config.py` reads it as "not set". The test checks the exit code, that the message names the variable, and that the password from `DATABASE_URL` never appears in the output.

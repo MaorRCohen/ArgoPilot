@@ -18,7 +18,7 @@ Swagger UI: http://127.0.0.1:8000/docs
 
 ## Configuration (`DATABASE_URL`)
 
-The settings are read in `config.py` (pydantic-settings), from the environment or from a `.env` file next to `config.py`. Copy the example to start: `cp .env.example .env`. A real environment variable beats `.env`. `DATABASE_URL` is required, with no default. If it is missing, or its scheme is not `sqlite` or `postgresql` (a `+driver` suffix is allowed), the service refuses to start and names the variable; it never prints the value. A relative SQLite path such as `sqlite:///registry.db` is taken from the `services/registry-service` folder, wherever you start the service. `DATABASE_OWNER_URL` is optional: the setup/seed command and Postgres tests use it, and the API never does. Examples:
+The settings are read in `config.py` (pydantic-settings), from the environment or from a `.env` file next to `config.py`. Copy the example to start: `cp .env.example .env`. A real environment variable beats `.env`. `DATABASE_URL` is required, with no default. If it is missing, or its scheme is not `sqlite` or `postgresql` (a `+driver` suffix is allowed), the service refuses to start and names the variable; it never prints the value. A relative SQLite path such as `sqlite:///registry.db` is taken from the `services/registry-service` folder, wherever you start the service. `DATABASE_OWNER_URL` is optional: only the setup command (`setup_db.py`) uses it, and the API never does. Examples:
 
 ```
 DATABASE_URL=sqlite:///registry.db
@@ -27,9 +27,40 @@ DATABASE_URL=postgresql+psycopg://user:password@host:5432/dbname
 
 At startup the service logs `Using database: <scheme>` (`sqlite` or `postgresql`) and never the URL or password. `.env` is for local use only; do not commit it.
 
+## Set up PostgreSQL (production)
+
+One time only. Install PostgreSQL (`sudo apt install postgresql`), then run this as the `postgres` user (`sudo -u postgres psql`). `\password` asks for the password in the terminal, so no password goes into a file or the command line:
+
+```sql
+CREATE ROLE registry_owner LOGIN;
+\password registry_owner
+CREATE ROLE registry_app LOGIN;
+\password registry_app
+CREATE DATABASE registry OWNER registry_owner;
+\c registry
+GRANT CONNECT ON DATABASE registry TO registry_app;
+GRANT USAGE ON SCHEMA public TO registry_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE registry_owner IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO registry_app;
+```
+
+Put both URLs in `.env` (placeholders: use the passwords you chose and your host):
+
+```
+DATABASE_URL=postgresql+psycopg://registry_app:<app-password>@<host>:5432/registry
+DATABASE_OWNER_URL=postgresql+psycopg://registry_owner:<owner-password>@<host>:5432/registry
+```
+
+Then create the tables and load the 15 seed rows, from `services/registry-service`:
+
+```bash
+uv run python setup_db.py
+```
+
+The command connects as `registry_owner` and prints the row count per table. It is safe to run again: it creates only missing tables and inserts only missing rows, deletes nothing, and either saves everything or nothing.
+
 ## PostgreSQL for tests and local runs
 
-Production uses an existing PostgreSQL database. For tests and local runs, start a throwaway one in Docker (bound to localhost only; the tests never start or stop it):
+For tests and local runs, start a throwaway one in Docker (bound to localhost only; the tests never start or stop it):
 
 ```bash
 docker run -d --name registry-postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=registry_test -p 127.0.0.1:5432:5432 postgres:16
@@ -37,13 +68,13 @@ docker run -d --name registry-postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES
 
 Run the same test suite on it (without `TEST_DATABASE_URL`, `uv run pytest` runs on SQLite): `TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/registry_test uv run pytest`. The tests drop and recreate the `public` schema before every test, so they refuse to run unless the host is `localhost` or `127.0.0.1` and the database name contains `test`.
 
-`seed_registry_pg.sql` (schema plus seed rows) is for tests and local use only. The production database already exists and is never created or changed by this service.
+The tests create their own tables with `setup_db.py`'s code. The API never creates or changes tables: only `setup_db.py` does.
 
-To run the k6 load test (see Performance) against PostgreSQL, load the seed into a separate database whose name does not contain `test`:
+To run the k6 load test (see Performance) against PostgreSQL, create a separate database whose name does not contain `test`, and seed it with the same command:
 
 ```bash
 docker exec registry-postgres psql -U postgres -c "CREATE DATABASE registry_perf"
-docker exec -i registry-postgres psql -U postgres -d registry_perf -v ON_ERROR_STOP=1 < seed_registry_pg.sql
+DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/registry_perf DATABASE_OWNER_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/registry_perf uv run python setup_db.py
 DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/registry_perf uv run uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
