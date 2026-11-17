@@ -534,3 +534,13 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **AI suggested:** none. The instructor's rule.
 - **I decided:** the root `README.md` has a "## Backlog" section. Each idea is one bullet: what it is and what it needs. Nothing is implemented.
 - **Why:** the instructor's rule. It keeps the P2 scope fixed and keeps the ideas in one place.
+
+## Step 16 – PostgreSQL performance (NFR-2.2)
+
+### 90. p95 on PostgreSQL is about 58 ms (2026-11-17)
+- **AI suggested:** the cause is a new database connection per request. A PostgreSQL connect plus SCRAM login costs far more than SQLite's, which is almost free.
+- **Checked in code:** this does not fit `db.py`. PostgreSQL uses SQLAlchemy's default pool with `pool_pre_ping=True`, so connections are reused; only SQLite uses `NullPool` (one connection per request). Entry 62 already measured the pool (1-2 connections in use at 40 rps) and `pool_pre_ping` (no effect). Not measured again in this step.
+- **I decided:** keep the code as is for now (well under the 100 ms target). Add a connection pool in `db.py` at the end of P2 and re-measure.
+- **Correction (open):** the pool already exists, so this decision needs a different cause first. Next step: run SQLite and PostgreSQL back-to-back in one session, on the same seeded data, to separate host drift from the database cost.
+- **Why:** one run on another day (2026-11-17) is not comparable to the SQLite runs of 2026-11-03 and 2026-11-10. Entry 62 shows a same-code run going from 27 to 58 ms within one session, so the gap may be host drift, not PostgreSQL.
+- **Research:** from memory, not re-checked online: SQLAlchemy 2.0 uses QueuePool for non-SQLite engines by default; `pool_pre_ping` sends a `SELECT 1` on each checkout.

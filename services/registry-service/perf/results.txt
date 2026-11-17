@@ -335,3 +335,16 @@ Host: load average: 0.52, 0.58, 0.32 before, load average: 1.22, 0.72, 0.40 afte
 
 
 
+
+## PostgreSQL (P2, NFR-2.2), 2026-11-17
+
+Measured with k6 (`perf/registry_load.js`). Service on PostgreSQL: database `registry`, role `registry_app` (the production setup in the README; not the Docker `registry_perf` run above). 10 req/s per endpoint for 2 min, 4905 requests, 0 failed, 0 dropped iterations, all thresholds passed. Figures are from the run summary; the raw k6 output is not saved in this file. Host load not recorded. Not back-to-back with the SQLite runs, so the comparison includes host drift.
+
+p95 per endpoint:
+- GET farm by id: 58.49 ms
+- GET farms list: 58.62 ms
+- GET plot by id: 58.18 ms
+- GET plots list: 54.86 ms
+
+Overall http_req_duration: avg 39.46 ms, med 39.17 ms, p95 58 ms, p99 68.9 ms, max 142.5 ms.
+SQLite P1 (2026-11-03, above): p95 about 25 ms.
