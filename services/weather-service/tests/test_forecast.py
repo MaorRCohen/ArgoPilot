@@ -359,3 +359,83 @@ def test_the_cooldown_is_per_cell(harness):
     h.fake.default = None  # the provider recovers
     assert h.get(*B).stale is False  # another cell is not held back
     assert h.fake.calls == 4
+
+
+# ---- no retry for a bad request, and the provider's Retry-After extends the cooldown
+
+
+def test_a_bad_request_status_is_one_call_then_503(harness):
+    h = harness()
+    h.fake.default = httpx.Response(400)
+    with pytest.raises(Unavailable):
+        h.get()
+    assert h.fake.calls == 1
+
+
+def test_a_404_is_one_call_then_the_old_forecast_as_stale(harness, clock):
+    h = harness()
+    h.get()
+    clock.shift(4 * HOUR)
+    h.fake.default = httpx.Response(404)
+    assert h.get().stale is True
+    assert h.fake.calls == 2
+
+
+def test_the_provider_retry_after_sets_the_cooldown(harness, clock):
+    h = harness()
+    h.fake.default = httpx.Response(429, headers={"Retry-After": "120"})
+    with pytest.raises(Unavailable) as info:
+        h.get()
+    assert (h.fake.calls, info.value.retry_after_s) == (1, 120)
+    clock.shift(60)
+    with pytest.raises(Unavailable) as info:
+        h.get()
+    assert (h.fake.calls, info.value.retry_after_s) == (1, 60)  # no provider call at 60 s
+    clock.shift(60)
+    with pytest.raises(Unavailable):
+        h.get()
+    assert h.fake.calls == 2  # allowed after 120 s
+
+
+def test_a_huge_retry_after_is_capped_at_max_stale(harness):
+    h = harness()
+    h.fake.default = httpx.Response(503, headers={"Retry-After": "999999999"})
+    with pytest.raises(Unavailable) as info:
+        h.get()
+    assert info.value.retry_after_s == 24 * HOUR
+
+
+def test_a_small_retry_after_does_not_shorten_the_cooldown(harness):
+    h = harness()
+    h.fake.default = httpx.Response(503, headers={"Retry-After": "5"})
+    with pytest.raises(Unavailable) as info:
+        h.get()
+    assert info.value.retry_after_s == 30
+
+
+# ---- the final outcome is logged
+
+
+def test_serving_stale_is_logged_with_its_age(harness, clock, caplog):
+    import logging
+
+    h = harness()
+    h.get()
+    clock.shift(4 * HOUR)
+    h.fake.default = httpx.Response(500)
+    with caplog.at_level(logging.INFO):
+        h.get()
+    text = " ".join(r.getMessage() for r in caplog.records if r.name == "forecast")
+    assert "stale" in text and "cell=(312, 347)" in text and "age=14400" in text
+
+
+def test_a_503_is_logged_as_an_error(harness, caplog):
+    import logging
+
+    h = harness()
+    h.fake.default = httpx.Response(500)
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(Unavailable):
+            h.get()
+    errors = [r for r in caplog.records if r.name == "forecast" and r.levelno == logging.ERROR]
+    assert len(errors) == 1 and "cell=(312, 347)" in errors[0].getMessage()

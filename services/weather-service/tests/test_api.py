@@ -242,3 +242,11 @@ def test_a_missing_base_url_stops_the_start_with_a_clear_message(monkeypatch, tm
 def test_uvicorn_finds_the_app_without_any_settings_at_import():
     # `uvicorn main:app` imports this. Settings are read at startup, not here.
     assert set(main.app.openapi()["paths"]) == {"/health", "/v1/forecast"}
+
+
+def test_our_retry_after_reflects_the_providers(api):
+    a = api()
+    a.fake.default = httpx.Response(429, headers={"Retry-After": "120"})
+    response = a.forecast()
+    assert_problem(response, 503, "UNAVAILABLE")
+    assert response.headers["retry-after"] == "120"

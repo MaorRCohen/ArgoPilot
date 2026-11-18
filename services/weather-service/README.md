@@ -79,7 +79,22 @@ The service always sends `daily=et0_fao_evapotranspiration,rain_sum,showers_sum`
 
 A fetch is up to 3 attempts (2 retries). Each attempt is cut off after 1.5 s (`PROVIDER_TIMEOUT_S`). Before retry number `n` (0, 1) the service waits a random time between 0 and `0.2 × 2^n` s (full jitter). All attempts and waits together stay within 4 s (`PROVIDER_TOTAL_BUDGET_S`): a retry that could not get at least half a timeout is not started, and the last attempt gets only the time that is left.
 
+| Failure | Retried? | Why |
+|---|---|---|
+| Timeout, connection error | yes | The network or the provider may be fine a moment later. |
+| HTTP 408, 429, 500, 502, 503, 504 | yes | Temporary by definition: too slow, too many requests, server trouble. |
+| `200` with a body that is not JSON, a missing field, a null, a wrong unit, too few days (FR-2.6) | yes | A half-written or glitched answer; the next one is often fine. |
+| Any other status (400, 401, 403, 404, 422 ...) | no | The request itself is wrong (or the key is). Repeating it can never succeed, and it only adds useless calls. The service goes straight to the stale answer or the 503. |
+
+**The provider's `Retry-After`** (on 429 and 503, in seconds or as an HTTP date) is honoured. If waiting for it does not fit in what is left of the 4 s budget, the service does not wait: it stops at once and falls back to stale or 503. The cell's cooldown becomes `max(FAILURE_COOLDOWN_S, Retry-After)`, never more than `MAX_STALE_S`, so the provider is left alone for as long as it asked. Our own 503 `Retry-After` is what is left of that cooldown.
+
 **This service is the only place in AgroPilot that retries.** A caller must not retry it: call it once, with a timeout a bit above 4 s (for example 5 s). Retries on top of retries multiply the load on the provider and the wait of the grower.
+
+## Logs
+
+- `WARNING` for every failed attempt: `attempt failed cell=(312, 347) attempt 2/3 reason=HTTP status 500`. The reason is the kind of error, a status code, or the validation check that failed (for example `daily_units.rain_sum is missing or not mm`).
+- `WARNING` when a stale forecast is served (`served stale cell=... age=14400 s`), `ERROR` when the answer is a 503.
+- The API key and the provider URL (its query string holds the key) are never logged. httpx's own request log is turned down to `WARNING` for that reason.
 
 ## The oldest forecast that is served: 24 hours
 

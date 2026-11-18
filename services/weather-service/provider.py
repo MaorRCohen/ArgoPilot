@@ -5,8 +5,10 @@ would read as "no water needed" (FR-2.8).
 """
 
 import asyncio
+import logging
 import math
 import random
+from email.utils import parsedate_to_datetime
 from asyncio import sleep
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -14,7 +16,18 @@ from datetime import UTC, date, datetime, timedelta
 import httpx
 
 from config import Settings
+from grid import cell_key
 from models import ForecastDay
+
+logger = logging.getLogger(__name__)
+# httpx logs every request at INFO with its full URL, and the API key is in that URL's query string.
+for _name in ("httpx", "httpcore"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
+
+# Worth another try: the provider or the network may be fine a moment later. Any other status
+# (400, 401, 403, 404, 422 ...) means the request is wrong, and no retry can fix that.
+RETRYABLE_STATUSES = {408, 429, 500, 502, 503, 504}
+RETRY_AFTER_STATUSES = {429, 503}
 
 # ET0 (FAO-56 Penman-Monteith) and the liquid water that reaches the soil: rain plus showers, no snow.
 DAILY_VARIABLES = ("et0_fao_evapotranspiration", "rain_sum", "showers_sum")
@@ -23,7 +36,15 @@ MAX_UTC_OFFSET_S = 24 * 3600
 
 
 class ProviderError(Exception):
-    """The provider gave no usable forecast. The text names the problem, never the URL: it holds the API key."""
+    """The provider gave no usable forecast. The text names the problem, never the URL: it holds the API key.
+
+    retryable: another attempt may work. retry_after_s: what the provider asked for, if it did.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = True, retry_after_s: float | None = None) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after_s = retry_after_s
 
 
 @dataclass(frozen=True)
@@ -52,10 +73,15 @@ class OpenMeteoClient:
         # An attempt with less time than this cannot finish a round trip, so it is not started.
         shortest = settings.provider_timeout_s / 2
         failure = ProviderError("no attempt was made")
-        for attempt in range(settings.provider_retries + 1):
+        attempts = settings.provider_retries + 1
+        cell = cell_key(lat, lon)
+        asked_to_wait: float | None = None
+        for attempt in range(attempts):
             if attempt > 0:
                 wait = jitter(settings.backoff_base_s * 2 ** (attempt - 1))
-                if _seconds_left(deadline) - wait < shortest:
+                if failure.retry_after_s is not None:
+                    wait = max(wait, failure.retry_after_s)  # the provider asked for more time
+                if _seconds_left(deadline) - wait < shortest:  # includes a Retry-After longer than the budget
                     break
                 await sleep(wait)
             timeout = min(settings.provider_timeout_s, _seconds_left(deadline))
@@ -64,7 +90,14 @@ class OpenMeteoClient:
             try:
                 return await self._attempt(lat, lon, timeout)
             except ProviderError as exc:
+                # The reason never holds the URL or the key (see ProviderError).
+                logger.warning("attempt failed cell=%s attempt %d/%d reason=%s", cell, attempt + 1, attempts, exc)
                 failure = exc
+                if exc.retry_after_s is not None:
+                    asked_to_wait = max(asked_to_wait or 0, exc.retry_after_s)
+                if not exc.retryable:
+                    break
+        failure.retry_after_s = asked_to_wait
         raise failure
 
     async def _attempt(self, lat: float, lon: float, timeout: float) -> Forecast:
@@ -78,7 +111,12 @@ class OpenMeteoClient:
             # httpx puts the URL, with the API key, into its messages: only the kind of error goes on.
             raise ProviderError(f"request failed: {type(exc).__name__}") from None
         if not response.is_success:
-            raise ProviderError(f"HTTP status {response.status_code}")
+            status = response.status_code
+            raise ProviderError(
+                f"HTTP status {status}",
+                retryable=status in RETRYABLE_STATUSES,
+                retry_after_s=_retry_after_s(response) if status in RETRY_AFTER_STATUSES else None,
+            )
         try:
             payload = response.json()
         except ValueError:
@@ -99,6 +137,22 @@ class OpenMeteoClient:
         if api_key:
             params["apikey"] = api_key
         return params
+
+
+def _retry_after_s(response: httpx.Response) -> float | None:
+    """The provider's Retry-After: seconds, or an HTTP date. None if absent or unreadable."""
+    value = response.headers.get("retry-after", "").strip()
+    try:
+        return max(0.0, float(value)) if value and math.isfinite(float(value)) else None
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return max(0.0, (when - datetime.now(UTC)).total_seconds())
 
 
 def _seconds_left(deadline: datetime) -> float:

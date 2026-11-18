@@ -1,6 +1,7 @@
 """Serves forecasts from memory, and fetches from the provider when a cell has no fresh one (FR-2.5 to FR-2.7)."""
 
 import asyncio
+import logging
 import math
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -10,6 +11,9 @@ from config import Settings
 from grid import Cell, cell_center, cell_key
 from models import ForecastDay
 from provider import Forecast, OpenMeteoClient, ProviderError
+
+
+logger = logging.getLogger(__name__)
 
 
 class Unavailable(Exception):
@@ -79,8 +83,8 @@ class ForecastService:
         lat, lon = cell_center(cell)
         try:
             forecast = await self._provider.fetch(lat, lon)
-        except ProviderError:
-            self._start_cooldown(cell)
+        except ProviderError as exc:
+            self._start_cooldown(cell, exc.retry_after_s)
             raise
         self._store(cell, forecast)
         return forecast
@@ -89,10 +93,12 @@ class ForecastService:
         until = self._failed_until.get(cell)
         return until is not None and now < until
 
-    def _start_cooldown(self, cell: Cell) -> None:
+    def _start_cooldown(self, cell: Cell, provider_retry_after_s: float | None) -> None:
+        """Our cooldown, or what the provider asked for if that is longer, but never longer than max stale."""
         now = datetime.now(UTC)
         self._forget_finished_cooldowns(now)
-        self._failed_until[cell] = now + timedelta(seconds=self._settings.failure_cooldown_s)
+        seconds = max(self._settings.failure_cooldown_s, provider_retry_after_s or 0)
+        self._failed_until[cell] = now + timedelta(seconds=min(seconds, self._settings.max_stale_s))
 
     def _forget_finished_cooldowns(self, now: datetime) -> None:
         self._failed_until = {cell: until for cell, until in self._failed_until.items() if until > now}
@@ -126,7 +132,9 @@ class ForecastService:
         if cached is not None:
             served = _serve(cached, days, now, stale=True)
             if served is not None:
+                logger.warning("served stale cell=%s age=%d s", cell, _age_s(cached, now))
                 return served
+        logger.error("no forecast available, answering 503 cell=%s", cell)
         raise Unavailable(self._retry_after_s(cell, now))
 
     def _retry_after_s(self, cell: Cell, now: datetime) -> int:

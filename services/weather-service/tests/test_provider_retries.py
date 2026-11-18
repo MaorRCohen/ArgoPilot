@@ -181,3 +181,119 @@ def test_a_wait_that_does_not_fit_in_the_budget_is_not_taken(fake, waits, monkey
         fetch(fake, backoff_base_s=10)  # a first wait of up to 10 s, budget 4 s
     assert fake.calls == 1
     assert waits == []
+
+
+# ---- only transient failures are retried
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+def test_other_statuses_are_not_retried(fake, waits, status):
+    fake.default = httpx.Response(status)
+    with pytest.raises(ProviderError):
+        fetch(fake)
+    assert fake.calls == 1
+    assert waits == []
+
+
+@pytest.mark.parametrize("status", [408, 429, 500, 502, 503, 504])
+def test_transient_statuses_are_retried(fake, waits, status):
+    fake.default = httpx.Response(status)
+    with pytest.raises(ProviderError):
+        fetch(fake)
+    assert fake.calls == 3
+
+
+@pytest.mark.parametrize("error", [httpx.ReadTimeout("slow"), httpx.ConnectError("refused")], ids=type)
+def test_timeouts_and_connection_errors_are_retried(fake, waits, error):
+    fake.default = error
+    with pytest.raises(ProviderError):
+        fetch(fake)
+    assert fake.calls == 3
+
+
+@pytest.mark.parametrize("body", [
+    httpx.Response(200, text="<html>"),
+    {"daily": None, "daily_units": None},
+], ids=["not json", "missing fields"])
+def test_an_invalid_200_body_is_retried(fake, waits, body):
+    fake.default = body
+    with pytest.raises(ProviderError):
+        fetch(fake)
+    assert fake.calls == 3
+
+
+# ---- the provider's Retry-After
+
+
+def rate_limited(value, status=429):
+    return httpx.Response(status, headers={"Retry-After": value})
+
+
+def test_a_retry_after_longer_than_the_budget_means_no_wait_and_no_retry(fake, waits):
+    fake.default = rate_limited("120")
+    with pytest.raises(ProviderError) as info:
+        fetch(fake)
+    assert fake.calls == 1
+    assert waits == []
+    assert info.value.retry_after_s == 120
+
+
+def test_a_retry_after_that_fits_in_the_budget_is_waited(fake, waits):
+    fake.script = [rate_limited("1", 503)]
+    fetch(fake)
+    assert waits == [1.0]
+    assert fake.calls == 2
+
+
+def test_retry_after_as_an_http_date_is_parsed(fake, waits):
+    from email.utils import format_datetime
+
+    from tests.fakes import NOW
+    from datetime import timedelta
+
+    fake.default = rate_limited(format_datetime(NOW + timedelta(seconds=90), usegmt=True))
+    with pytest.raises(ProviderError) as info:
+        fetch(fake)
+    assert info.value.retry_after_s == pytest.approx(90)
+
+
+@pytest.mark.parametrize("value", ["soon", "", "-5x"])
+def test_an_unreadable_retry_after_is_ignored(fake, waits, value):
+    fake.default = rate_limited(value)
+    with pytest.raises(ProviderError) as info:
+        fetch(fake)
+    assert info.value.retry_after_s is None
+    assert fake.calls == 3
+
+
+# ---- logs
+
+
+def test_each_failed_attempt_is_logged_with_cell_and_reason_and_never_the_key(fake, waits, caplog):
+    import logging
+
+    fake.default = httpx.Response(500)
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(ProviderError):
+            fetch(fake, open_meteo_api_key="k3y-s3cret")
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 3
+    assert "cell=(312, 347)" in warnings[0].getMessage()
+    assert "attempt 1/3" in warnings[0].getMessage()
+    assert "HTTP status 500" in warnings[0].getMessage()
+    assert "attempt 3/3" in warnings[2].getMessage()
+    assert "k3y-s3cret" not in caplog.text
+    assert "open-meteo.test" not in caplog.text
+    assert "apikey" not in caplog.text
+
+
+def test_a_validation_failure_is_logged_with_which_check_failed(fake, waits, caplog):
+    import logging
+
+    body = open_meteo_body()
+    body["daily_units"]["rain_sum"] = "inch"
+    fake.default = body
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(ProviderError):
+            fetch(fake)
+    assert "daily_units.rain_sum" in caplog.text

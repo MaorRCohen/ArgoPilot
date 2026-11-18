@@ -618,3 +618,23 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** not built. The idea is one line in the root README Backlog.
 - **Why:** everything is request/response today, and nothing in the spec needs a push.
 - **Research:** none.
+
+## Step 18 – weather-service retry policy and logs
+
+### 103. Retry only transient failures
+- **AI suggested:** none. The owner decided this after the first build, where every failure was retried (entry 96 left it open).
+- **I decided:** retry timeouts, connection errors, HTTP 408, 429, 500, 502, 503, 504 and a `200` with an invalid body (not JSON, missing field, null, wrong unit, short days; FR-2.6). Any other status (400, 401, 403, 404, 422 ...) is not retried: one call, then stale or 503.
+- **Why:** a bad request can never succeed by repeating it, and every retry is a useless call to the provider. A bad `200` body stays retryable because the next answer is often fine.
+- **Research:** the AWS Builders' Library article already read for entry 96 says client errors (4xx) are not worth retrying. 408 and 429 are the 4xx that mean "try again later". Tests: `tests/test_provider_retries.py` (400, 401, 403, 404, 422 give 1 call; 408, 429, 500, 502, 503, 504, timeout, connection error and invalid bodies give 3).
+
+### 104. Honour the provider's Retry-After to extend the cooldown
+- **AI suggested:** accept the header as seconds or as an HTTP date; an unreadable value is ignored (normal retry rules). The wait is `max(jitter, Retry-After)` when it fits in the budget.
+- **I decided:** on 429 and 503, a `Retry-After` longer than the time left in the 4 s budget means no wait: stop and fall back now. The cell's cooldown becomes `max(FAILURE_COOLDOWN_S, Retry-After)`, capped at `MAX_STALE_S`. Our own 503 `Retry-After` is the remaining cooldown.
+- **Why:** the provider told us when it will accept calls again. Calling earlier gets another 429 and may extend the block. The cap keeps a huge or wrong value from silencing a cell for ever.
+- **Research:** `Retry-After` is seconds or an HTTP date (RFC 9110, section 10.2.3; from memory, not re-checked). Tests: 429 with `Retry-After: 120` gives 1 call and no wait, no provider call at 60 s, a call allowed at 120 s, and our 503 says 120 then 60; an HTTP date is parsed; `999999999` is capped to 86400; a value under 30 does not shorten the cooldown.
+
+### 105. Log every failed attempt and the final outcome
+- **AI suggested:** the tests found that httpx logs each request at INFO with its full URL, and the API key is in that query string. `provider.py` now sets the `httpx` and `httpcore` loggers to `WARNING`.
+- **I decided:** `WARNING` for each failed attempt (cell key, attempt number, reason: error kind, status code, or the validation check that failed). `WARNING` when a stale forecast is served (with its age), `ERROR` when the answer is a 503. Never the API key or the provider URL.
+- **Why:** the first build was silent: a stale answer or a 503 had no visible cause, the same lesson as the silent 500 in the registry. This reverses the earlier "no logging" choice for this service, at the owner's request.
+- **Research:** test `test_each_failed_attempt_is_logged_with_cell_and_reason_and_never_the_key` set a fake key and failed before the httpx fix. Reasons are built from fixed texts, never from httpx's messages.
