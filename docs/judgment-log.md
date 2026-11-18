@@ -665,3 +665,53 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** each day gets `wind_10m_ms` and `rh_min_pct`, after `rain_mm`. FR-2.8 applies: a missing field, a null, a non-number, a negative wind, a humidity outside 0-100 or a wrong unit is a provider failure (retry, stale or 503). Never a default. The cache is in memory, so a restart is enough, no migration.
 - **Why:** so the planner can apply the FAO-56 climate adjustment of Kc (Eq. 62 and 65), which needs `u2` and `RHmin`. The system is global, and in hot, dry, windy places Kc mid can be about 10% higher. The wind stays at 10 m here: the conversion to 2 m (FAO Eq. 47) is the planner's job, so this service stays crop-agnostic.
 - **Research:** the Open-Meteo docs list "Mean Wind Speed (10 m)" and "Minimum Relative Humidity (2 m)" as daily variables but print no API names for them, and `wind_speed_unit` accepts `ms`. One real call (2026-11-18, lat 31.25, lon 34.75 cell) confirmed the names, the units `m/s` and `%` and that the values are sane for the Negev in November: wind 1.5 to 2.5 m/s, minimum humidity 28 to 51%. The FAO equation numbers are as given by the owner, not re-checked in FAO-56. Humidity arrives as whole numbers (41), which become `41.0`.
+
+## Step 21 – irrigation-calc-reference skill and crop data
+
+### 109. Crop values live in crop_profiles.json, not in code
+- **AI suggested:** a data-only JSON file keyed by the registry crop id (`tomato`, `bell-pepper`), with Kc ini/mid/end, height h, all Table 11 stage rows (one marked default) and a `source` next to every value.
+- **I decided:** `services/planner-service/crop_profiles.json` is the single source of crop values. Adding a crop means adding an entry, not changing code. The default stage row is the Mediterranean one for both crops.
+- **Why:** the numbers can be checked and changed without touching formulas, and every value shows where it came from.
+- **Research:** FAO's own tools (CropWat, AquaCrop) keep crop data in crop files (from memory, not re-checked). Values from FAO-56 Tables 11 and 12 as read in `docs/research/fao56.md`. Pepper init is printed "25/30" in Table 11; 30 is stored because 30+35+40+20 = 125 (AI inference, not stated by FAO).
+
+### 110. Drip root depth and a 30 % trigger instead of FAO's values
+- **AI suggested:** FAO Table 22 (tomato 0.7-1.5 m, pepper 0.5-1.0 m) and p (0.40 / 0.30).
+- **I decided:** root depth 0.10 m at planting, linear to 0.30 m at the end of the development stage, then 0.30 m. Irrigate when depletion reaches 30 % of TAW. The instructor's "half" is a simplification.
+- **Why:** Table 22 is for deep, non-drip roots (its footnote 1). On drip, most feeder roots are in the top 25-30 cm, so a bigger Zr would count water the roots cannot reach. FAO-56 has no rule for TAW under drip (gap in the research file).
+- **Research:** WA DPIRD "Drip irrigating tomatoes on sand" (75 mm at transplant to 300 mm mature, most feeder roots 0-25 cm), UF/IFAS root distribution, Purdue (pepper, upper foot). Trigger: UC 20-30 %, UF/IFAS 33 %. These sources are the owner's, not re-checked by the AI.
+
+### 111. Tomato Kc end is 0.80
+- **AI suggested:** FAO gives 0.70-0.90 for tomato and no rule to pick inside the range (fao56.md §2).
+- **I decided:** 0.80, the middle of the range. The range is kept in the file.
+- **Why:** an arbitrary end of the range would bias every late-season plan. The middle is the least biased choice.
+- **Research:** FAO-56 Table 12 and Ch. 6 (Kc end is high if irrigated until fresh harvest, low if the crop dries in the field; no number).
+
+### 112. Rain rule: ignore under 0.2 ET0, runoff 0
+- **AI suggested:** FAO-56 has no effective-rainfall table (gap). It has the 0.2 ET0 skip rule (Ch. 8) and Annex 8 sets runoff to zero.
+- **I decided:** rain under 0.2 x ET0 is ignored, otherwise all of it reduces depletion; runoff 0; depletion never below 0 (excess is lost).
+- **Why:** it uses only what FAO states and avoids inventing a percentage.
+- **Research:** FAO-56 Ch. 8 (Eq. 85, limits on Dr), Annex 8 assumptions.
+
+### 113. Uniformity factor 1.1
+- **AI suggested:** FAO-56 gives no rule for application uniformity or efficiency (gap).
+- **I decided:** `UNIFORMITY_FACTOR` = 1.1, a setting in the planner's `config.py`, applied only to irrigation litres, never to rain.
+- **Why:** drip emitters do not deliver the same amount everywhere; 10 % extra covers the dry spots. Rain is not delivered by emitters.
+- **Research:** UC drip non-uniformity 1.1-1.2 (the owner's source, not re-checked by the AI).
+
+### 114. soil_moisture 0-10 entered by the grower, no stored state
+- **AI suggested:** none; this is the instructor's requirement (the planner keeps no state between runs).
+- **I decided:** `soil_moisture` is required, 0 to 10, 0 = completely dry or first planting. Start depletion = TAW x (1 - soil_moisture/10). Missing or out of range is an error.
+- **Why:** with no stored state, the grower's reading is the only way to know today's wetness.
+- **Research:** USDA "feel and appearance" method (a grower can judge soil wetness by hand; the owner's source, not re-checked). FAO Eq. 87 starts depletion from a measured water content.
+
+### 115. Season ended is a warning, not an error
+- **AI suggested:** FAO-56 gives stage lengths "indicative" only (Table 11 footnote), so a plot can be past them while the crop still grows.
+- **I decided:** after the total season length, stage is `"ended"`, Kc end is used, `season_ended` is true and the warning `SEASON_ENDED` is added. The grower still gets the plan.
+- **Why:** an error would leave the grower with nothing for a crop that is still in the field.
+- **Research:** FAO-56 Table 11 footnote and Ch. 6 text (lengths vary with region, climate and variety).
+
+### 116. Climate adjustment uses the plan-days average
+- **AI suggested:** FAO Eq. 62 (Kc mid) and Eq. 65 (Kc end, only when Kc end >= 0.45), with u2 from the 10 m wind by Eq. 47.
+- **I decided:** one adjustment from the average u2 and RHmin over the plan days, clamped to 1-6 m/s and 20-80 %, added to Kc mid and Kc end. Reported in `assumptions.climate_adjustment`.
+- **Why:** FAO averages over a stage, not one day, so one windy day must not move Kc. Clamping is our reading of "the limits should be observed" (FAO does not say what to do outside them).
+- **Research:** `docs/research/fao56.md` §5. Eq. 47 (`u2 = u10 x 4.87 / ln(67.8 z - 5.42)`) is from FAO Ch. 3 and is not in the research file: not re-checked yet.
