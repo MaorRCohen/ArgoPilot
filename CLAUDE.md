@@ -5,6 +5,7 @@
 - Implement ONLY what the task spec lists. No extras (no pagination, created_at, CORS, logging, auth, Factory/Repository layers).
 - Explain each change in 2-3 lines so I can present it.
 - If you suggest something non-obvious, say so: I log decisions in docs/judgment-log.md.
+- Node/npm: always use the WSL nvm Node (export PATH=/home/maorc/.nvm/versions/node/v26.13.1/bin:$PATH); never the Windows npm under /mnt/c.
 - Settings live only in `services/registry-service/config.py` (pydantic-settings). Never read or create a `.env` file.
 
 ## Current task: P1 Registry API

@@ -776,3 +776,39 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** the 24 h cap, the warning `IRRIGATION_CAPPED` once per plan (first capped day) with the needed mm, the system's application rate (`application_rate_mm_per_h = round(system_flow_lph / area_m2, 2)`, always in `assumptions`) and the hours a full refill needs, and a "capped at 24 h" reason on the day. The rate idea is the owner's: tell the grower the speed of his system; faster emitters shorten the time, not the amount of water.
 - **Why:** the plan must never ask for more hours than a day has, and it must not silently shrink the water: the amount is kept and spread over days. North block example: day 1 36.36 mm in 1440 min, day 2 the remaining 21.89 mm in 867 min.
 - **Research:** none. The skill (rule 8b, formulas.md sections 4-6) and the README were updated. Not covered: the hours in the warning use the shown rate and include the uniformity factor; the cap applies per day on its own, not to the sum of the plan.
+
+### 125. Frontend: soil_moisture asked first, no default
+- **AI suggested:** a default of 5 when `?soil_moisture=` is missing, so the plan always loads.
+- **I decided:** rejected. The planner never guesses (no stored data, FR-2.8 spirit). Without the value the page shows only "How wet is the soil today?" (0-10, one tap, with the hand "feel" check); the plan loads after the pick and the value stays in the URL, nothing is stored. An invalid value asks again.
+- **Why:** a guessed soil value would silently change the irrigation advice.
+- **Research:** none.
+
+### 126. Frontend: season-ended gate and warnings rendered by code
+- **AI suggested:** show all warnings as one list under the answer.
+- **I decided:** `SEASON_ENDED` first, the plan behind "Show the plan anyway" (`<details>`, the plan is already loaded, no second request); `IRRIGATION_CAPPED` next to today's answer with the planner's message; `STALE_FORECAST` as before (age, stronger over 6 h); unknown codes: the message as-is.
+- **Why:** each warning is shown where it changes the grower's decision; a new planner code is never dropped.
+- **Research:** none.
+
+### 127. Frontend: planner timeout 6 s
+- **AI suggested:** 8 s.
+- **I decided:** 6 s from the chain budget (registry 1 s + weather 4.5 s = 5.5 s). Registry 3 s and health 2 s unchanged.
+- **Why:** long enough for the planner's worst case, no longer.
+- **Research:** none.
+
+### 128. Frontend: `cn` package flagged, removed, then accepted (corrected)
+- **AI suggested:** removed `shadcn` and its transitive `cn` package because `cn` looked unknown (supply-chain caution), and dropped the unused `shadcn/tailwind.css` import.
+- **I decided:** after checking the publisher (same maintainer as the shadcn CLI) and the official shadcn changelog (components import `cn` from the `cn` package, a drop-in for twMerge(clsx(...))), `cn` is official and accepted, with `@base-ui/react` (official shadcn Base UI support). Both are on the allow-list. `shadcn migrate cn` switched `src/lib/utils.ts` to `export { cn } from "cn"` and removed `clsx` and `tailwind-merge`.
+- **Why:** the first removal was wrong. Lesson: verify the publisher and the changelog before removing a package.
+- **Research:** `npm view` (maintainer), shadcn changelog.
+
+### 129. Frontend: NFR-2.8 verified with a real browser at 375 x 667
+- **AI suggested:** Playwright MCP.
+- **I decided:** the MCP failed to connect, so the same check ran with playwright-core and the installed Chromium. On /, normal plot, season-ended (closed and open), capped, soil question, error: `scrollWidth` = 375 and today's answer ends inside 667 px on all. Screenshots in `services/frontend/docs/screenshots/`.
+- **Why:** the requirement is measured, not assumed.
+- **Research:** none.
+
+### 130. Frontend: real shadcn/ui components, with a dependency check
+- **AI suggested:** dropped shadcn because nothing used it.
+- **I decided:** the instructor's stack requires real shadcn/ui: Card (today's answer, day rows), Alert (warnings, errors), Badge (stage, "Old forecast"), Button (soil 0-10 grid, "Update plan"), restyled to our palette; behaviour unchanged. New dependency allow-list: `cn`, `@base-ui/react`, class-variance-authority, lucide-react, tw-animate-css (+ radix if ever needed).
+- **Why:** requirement of tasks/p2.md; the allow-list check catches unknown packages the CLI may add.
+- **Research:** none. NFR-2.8 re-checked at 375 x 667 on all seven pages, screenshots refreshed.
