@@ -715,3 +715,9 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** one adjustment from the average u2 and RHmin over the plan days, clamped to 1-6 m/s and 20-80 %, added to Kc mid and Kc end. Reported in `assumptions.climate_adjustment`.
 - **Why:** FAO averages over a stage, not one day, so one windy day must not move Kc. Clamping is our reading of "the limits should be observed" (FAO does not say what to do outside them).
 - **Research:** `docs/research/fao56.md` §5. Eq. 47 (`u2 = u10 x 4.87 / ln(67.8 z - 5.42)`) is from FAO Ch. 3 and is not in the research file: not re-checked yet.
+
+### 117. Three hand-checked worked cases as test expectations
+- **AI suggested:** fill the three empty cases (A tomato mid-season, B the same with rain, C pepper at first planting) with per-day tables, and check every number against the rules with a script outside the repo.
+- **I decided:** case A was calculated by the owner. Cases B and C were completed with the AI and the owner re-checks them before the presentation. The tests use these tables as expected values. The script found no disagreement with the rules: every mm, litre, minute and percentage matches.
+- **Why:** the three cases cover a mid-season refill, all three rain outcomes (counted, ignored under 0.2 ET0, counted and lost above capacity), and first planting with a root zone that grows. Checking with a separate script keeps the expected values independent of the code under test.
+- **Research:** the rules themselves are in entries 109-116 and `docs/research/fao56.md`. No new source was needed.
