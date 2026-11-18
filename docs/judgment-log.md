@@ -764,3 +764,9 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
   14. Unhandled errors: 500 with `code` `INTERNAL_ERROR` (the weather-service uses `UNAVAILABLE` there, which would be wrong here).
 - **Why:** each was needed to write working code and the skill is silent. Entries 109-117 stay as they are.
 - **Research:** none.
+
+### 123. Compute with the rounded values that are shown
+- **AI suggested:** found live: kc 0.81 x et0 2.76 shown, but need_mm 2.25 (the engine used the hidden Kc 0.8143); also 50.25 / 52.5 = 95.71 % shown as 95.72. Every step now starts from the rounded numbers in the response: Kc 2 decimals first, need_mm = round(kc x et0, 2), depletion, irrigation and soil water in 0.01 mm, litres from the shown irrigation_mm, minutes from the shown litres and shown system flow. A property test checks this on seven plans.
+- **I decided:** adopted (the owner's decision).
+- **Why:** a grower or the instructor can check every number by hand. The difference is hundredths of a mm. To make the percentage checkable on every day, each day also shows `soil_capacity_mm` (capacity grows with the roots, so today's value in `assumptions` is not enough). Capacity is `round(mm per m x Zr, 2)` with Zr at full precision: rounding Zr first would move case C day 1 from 18.04 to 18.03 mm.
+- **Research:** none. The skill (SKILL.md rule 9, formulas.md sections 4, 5, 6, 7) was updated.

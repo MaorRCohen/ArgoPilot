@@ -36,7 +36,7 @@ def test_plan_for_case_a(api):
         "climate_adjustment": {"wind_2m_ms": 2.0, "rh_min_pct": 45.0, "kc_change": 0.0}}
     assert [d["date"] for d in body["days"]] == ["2026-11-18", "2026-11-19", "2026-11-20"]
     assert set(body["days"][0]) == {"date", "stage", "et0_mm", "rain_mm", "kc", "need_mm", "irrigation_mm", "litres",
-                                    "run_minutes", "soil_water_end_mm", "soil_water_end_pct", "stale", "reason"}
+                                    "run_minutes", "soil_capacity_mm", "soil_water_end_mm", "soil_water_end_pct", "stale", "reason"}
     assert body["days"][0]["irrigation_mm"] == 21.0 and body["days"][2]["soil_water_end_mm"] == 35.25
 
 

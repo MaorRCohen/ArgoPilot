@@ -68,6 +68,7 @@ class DayPlan:
     irrigation_mm: float
     litres: int
     run_minutes: int
+    soil_capacity_mm: float
     soil_water_end_mm: float
     soil_water_end_pct: float
     stale: bool
@@ -183,45 +184,51 @@ def build_plan(
     kc_end = crop.kc_end + adjustment if crop.kc_end >= KC_END_ADJUST_MIN else crop.kc_end
 
     emitters = plot.area_m2 / (plot.row_spacing_m * plot.emitter_spacing_m)
-    system_flow_lph = emitters * flow_lph
+    system_flow_lph = _r2(emitters * flow_lph)  # the shown value: minutes are computed from it
 
     def day_index(day: WeatherDay) -> int:
         # A date before planting (time-zone edge) counts as the planting day.
         return max((day.date - plot.planting_date).days, 0)
 
     def taw(d: int) -> float:
-        return available_water_mm_per_m * _root_depth_m(d, crop)
+        # The shown capacity: mm per m x root depth of that day, rounded to 0.01 mm.
+        return _r2(available_water_mm_per_m * _root_depth_m(d, crop))
 
-    depletion = taw(day_index(forecast[0])) * (1 - soil_moisture / 10)
+    # From here on every step starts from the rounded numbers that the response shows, so each shown
+    # number can be reproduced by hand from the other shown numbers (see SKILL.md, rounding).
+    depletion = _r2(taw(day_index(forecast[0])) * (1 - soil_moisture / 10))
     days: list[DayPlan] = []
     for day in forecast:
         d = day_index(day)
         capacity = taw(d)
-        stage, kc = _stage_and_kc(d, crop, kc_mid, kc_end)
+        stage, kc_full = _stage_and_kc(d, crop, kc_mid, kc_end)
+        kc, et0, rain = _r2(kc_full), _r2(day.et0_mm), _r2(day.rain_mm)
 
-        rain_counted = day.rain_mm >= RAIN_THRESHOLD * day.et0_mm
+        rain_counted = rain >= RAIN_THRESHOLD * et0
         if rain_counted:
-            depletion = max(depletion - day.rain_mm, 0.0)
+            depletion = _r2(max(depletion - rain, 0.0))
         irrigation_mm = 0.0
-        if depletion >= TRIGGER_FRACTION * capacity:
+        # round(.., 9): float noise must not decide an exact 30 % (5.25 vs 0.3 x 17.5).
+        if round(depletion - TRIGGER_FRACTION * capacity, 9) >= 0:
             irrigation_mm, depletion = depletion, 0.0
-        need_mm = kc * day.et0_mm
-        depletion = min(depletion + need_mm, capacity)
+        need_mm = _r2(kc * et0)
+        depletion = _r2(min(depletion + need_mm, capacity))
+        end_mm = _r2(capacity - depletion)
 
-        litres = irrigation_mm * plot.area_m2 * uniformity_factor
+        litres = round(irrigation_mm * plot.area_m2 * uniformity_factor)
         # round(.., 9) keeps float noise (120.00000000001) from adding a minute.
-        run_minutes = math.ceil(round(litres / system_flow_lph * 60, 9)) if irrigation_mm > 0 else 0
+        run_minutes = math.ceil(round(litres / system_flow_lph * 60, 9)) if litres > 0 else 0
         if irrigation_mm > 0:
             reason = REASON_IRRIGATE
-        elif day.rain_mm > 0:
+        elif rain > 0:
             reason = REASON_RAIN_COUNTED if rain_counted else REASON_RAIN_IGNORED
         else:
             reason = REASON_BELOW
         days.append(DayPlan(
-            date=day.date, stage=stage, et0_mm=_r2(day.et0_mm), rain_mm=_r2(day.rain_mm), kc=_r2(kc),
-            need_mm=_r2(need_mm), irrigation_mm=_r2(irrigation_mm), litres=round(litres),
-            run_minutes=run_minutes, soil_water_end_mm=_r2(capacity - depletion),
-            soil_water_end_pct=_r2((capacity - depletion) / capacity * 100), stale=day.stale, reason=reason,
+            date=day.date, stage=stage, et0_mm=et0, rain_mm=rain, kc=kc, need_mm=need_mm,
+            irrigation_mm=irrigation_mm, litres=litres, run_minutes=run_minutes, soil_capacity_mm=capacity,
+            soil_water_end_mm=end_mm, soil_water_end_pct=_r2(end_mm / capacity * 100), stale=day.stale,
+            reason=reason,
         ))
 
     first_d = day_index(forecast[0])
@@ -240,11 +247,11 @@ def build_plan(
         today=Today(date=days[0].date, irrigate=days[0].irrigation_mm > 0, run_minutes=days[0].run_minutes),
         assumptions=Assumptions(
             root_depth_m=round(_root_depth_m(first_d, crop), 3),
-            soil_capacity_mm=_r2(taw(first_d)),
+            soil_capacity_mm=taw(first_d),
             irrigate_when_depleted_pct=round(TRIGGER_FRACTION * 100),
             uniformity_factor=uniformity_factor,
             emitters=_r2(emitters),
-            system_flow_lph=_r2(system_flow_lph),
+            system_flow_lph=system_flow_lph,
             climate_adjustment=ClimateAdjustment(wind_2m_ms=_r2(u2), rh_min_pct=_r2(rh), kc_change=_r2(adjustment)),
         ),
         days=days,

@@ -254,3 +254,49 @@ def test_soil_moisture_out_of_range_is_an_error(moisture):
 def test_empty_forecast_is_an_error():
     with pytest.raises(ValueError, match="forecast"):
         engine.build_plan(NORTH, TOMATO, 175, 1.0, [], 5, 1.1)
+
+
+# --- auditability: every number can be reproduced from the numbers shown ---------------------------
+
+def audit_plans():
+    def planted(days_ago):
+        return dataclasses.replace(NORTH, planting_date=D0 - dt.timedelta(days=days_ago))
+
+    dev_mid = TOMATO.init_days + TOMATO.dev_days // 3
+    late = TOMATO.init_days + TOMATO.dev_days + TOMATO.mid_days + 4
+    return {
+        "mid season": plan(),
+        "rain": plan(forecast=days(7, rain=(10.0, 0.8, 20.0, 1.0, 0, 3.3, 0)), moisture=4),
+        "season ended": plan(plot=planted(TOMATO.total_days + 5), forecast=days(7, et0=3.37)),
+        "first planting": plan(plot=GREENHOUSE, crop=PEPPER, flow=2.0, moisture=0, forecast=days(7, et0=2.76)),
+        "climate adjustment": plan(plot=planted(dev_mid), forecast=days(7, et0=2.76, wind=5.1, rh=31.0)),
+        "late stage, odd numbers": plan(plot=planted(late), forecast=days(7, et0=4.37, wind=3.3, rh=61.0), moisture=3),
+        "dev stage, odd soil": plan(plot=planted(dev_mid), forecast=days(7, et0=3.13, wind=1.7, rh=38.0), soil=163, moisture=7),
+    }
+
+
+@pytest.mark.parametrize("name", list(audit_plans()))
+def test_every_number_is_reproducible_from_the_shown_numbers(name):
+    p = audit_plans()[name]
+    flow = p.assumptions.system_flow_lph
+    for d in p.days:
+        assert d.need_mm == round(d.kc * d.et0_mm, 2)
+        assert d.litres == round(d.irrigation_mm * NORTH_OR(p, name).area_m2 * p.assumptions.uniformity_factor)
+        expected_minutes = math.ceil(round(d.litres / flow * 60, 9)) if d.litres else 0
+        assert d.run_minutes == expected_minutes
+        assert d.soil_water_end_pct == round(d.soil_water_end_mm / d.soil_capacity_mm * 100, 2)
+    assert p.days[0].soil_capacity_mm == p.assumptions.soil_capacity_mm
+
+
+def NORTH_OR(p, name):
+    return GREENHOUSE if name == "first planting" else NORTH
+
+
+def test_the_water_balance_adds_up_in_the_shown_numbers():
+    # Depletion is in whole hundredths of mm: capacity - end is what was shown the day before, plus need.
+    p = plan(forecast=days(7, et0=2.76, wind=5.1, rh=31.0))
+    for before, after in zip(p.days, p.days[1:]):
+        if after.irrigation_mm == 0 and after.rain_mm < 0.2 * after.et0_mm:
+            shown_depletion = before.soil_capacity_mm - before.soil_water_end_mm
+            assert after.soil_capacity_mm - after.soil_water_end_mm == pytest.approx(
+                shown_depletion + after.need_mm, abs=0.0051)

@@ -27,7 +27,8 @@ Read next: `references/formulas.md` (equations, units, daily loop, rounding, out
    *Why:* FAO Ch. 8 (0.2 ET0 rule) and Annex 8 (RO = 0, irrigate back to field capacity, water in the morning, use after). Order matters: rain before the trigger, crop use after irrigation.
 8. **Litres, minutes.** `emitters = area / (row_spacing x emitter_spacing)`, `system_flow_lph = emitters x flow_lph`, `litres = irrigation_mm x area x UNIFORMITY_FACTOR`, `run_minutes = ceil(litres / system_flow_lph x 60)`. No irrigation gives 0.
    *Why:* 1 mm on 1 m2 = 1 L. The factor (1.1, UC says 1.1-1.2) covers drip non-uniformity, only on irrigation, never on rain. FAO has no rule for this (fao56.md gaps). The factor is a setting in the planner's `config.py` (never read `.env` directly).
-9. **Rounding.** mm 2 decimals, litres whole, minutes rounded UP. Compute with full precision, round only for output.
+9. **Rounding.** mm 2 decimals, litres whole, minutes rounded UP. Every step starts from the rounded values the response shows (Kc, ET0, rain, capacity, depletion, irrigation, litres, system flow), never from hidden full-precision ones.
+   *Why:* auditability (FR-2.11). A grower or the instructor must reproduce every number with a calculator from the numbers in the same response (kc 0.81 x et0 2.76 = 2.24, not 2.25). The difference is hundredths of a mm. Only the stage Kc interpolation and the root depth stay at full precision before their own rounding.
 10. **Output.** Exact fields in `references/formulas.md` section 6.
 
 ## Hard limits

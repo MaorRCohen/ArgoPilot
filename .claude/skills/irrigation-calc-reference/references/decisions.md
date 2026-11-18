@@ -17,7 +17,7 @@ All decided by the owner; logged in `docs/judgment-log.md` (entries from 109). S
 | Single Kc, no Ks, no Ke | dual Kcb + Ke (Annex 8) | Planning-level model for a daily plan; FAO Table 10 allows single Kc for basic schedules. Ks is not needed because we irrigate at 30 %, before FAO's stress point. |
 
 ## Worked cases (calculated by hand)
-Tests must use these as expected values. Case A was calculated by the owner; B and C were completed with the AI and must be re-checked by the owner. All values were checked against the rules in SKILL.md and `formulas.md` with a scratch script (not committed). Tables show rounded values; the script uses full precision.
+Tests must use these as expected values. Case A was calculated by the owner; B and C were completed with the AI and must be re-checked by the owner. All values were checked against the rules in SKILL.md and `formulas.md` with a scratch script (not committed). Tables show the rounded values, and the engine computes from these same rounded values.
 
 ### A. Tomato mid-season, soil_moisture 6, no rain
 - Plot North block, 1000 m2, loam 175 mm/m, rows 1.5 m, emitters 0.4 m, 1.0 L/h: 1666.67 emitters, 1666.67 L/h.

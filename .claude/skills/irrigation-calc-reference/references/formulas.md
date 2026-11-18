@@ -29,34 +29,36 @@ FAO refs are to FAO-56 (Allen et al. 1998). Details: `services/planner-service/d
 - Start: `depletion_0 = TAW(today) x (1 - soil_moisture/10)` (Eq. 87 idea: depletion from a measured wetness, FAO fao56.md §3).
 
 ## 4. Daily loop (for each forecast day, in order)
+All values below are the ROUNDED ones that are shown (2 decimals mm/Kc/%): `kc = round(Kc, 2)`, `et0`, `rain` rounded, `TAW = round(available_water_mm_per_m x Zr(d), 2)` (Zr itself at full precision), and depletion rounded to 0.01 after every step.
 ```
+depletion_0 = round(TAW_today x (1 - soil_moisture/10), 2)
 rain_eff   = rain_mm if rain_mm >= 0.2 * et0_mm else 0
-depletion  = max(depletion - rain_eff, 0)          # RO = 0, excess lost (Annex 8, Ch. 8)
-if depletion >= 0.30 * TAW:
-    irrigation_mm = depletion; depletion = 0       # refill to full (Annex 8: I = Dr)
+depletion  = round(max(depletion - rain_eff, 0), 2)  # RO = 0, excess lost (Annex 8, Ch. 8)
+if depletion >= 0.30 * TAW:                          # 30 % of the shown capacity
+    irrigation_mm = depletion; depletion = 0         # refill to full (Annex 8: I = Dr)
 else: irrigation_mm = 0
-need_mm    = Kc * et0_mm
-depletion  = min(depletion + need_mm, TAW)         # Eq. 85/86
-soil_water_end_mm  = TAW - depletion
-soil_water_end_pct = soil_water_end_mm / TAW * 100
+need_mm    = round(kc * et0_mm, 2)                   # kc and et0 as shown
+depletion  = round(min(depletion + need_mm, TAW), 2) # Eq. 85/86
+soil_water_end_mm  = round(TAW - depletion, 2)
+soil_water_end_pct = round(soil_water_end_mm / TAW * 100, 2)   # TAW = the day's shown soil_capacity_mm
 ```
 `rain_mm` in the output is the forecast value, whether or not it counted. `reason` is one short fixed text per branch (irrigate, rain counted, rain ignored, below trigger), never free text from a model.
 
 ## 5. Litres and minutes
 ```
-emitters       = area_m2 / (row_spacing_m * emitter_spacing_m)
-system_flow_lph = emitters * flow_lph
-litres         = irrigation_mm * area_m2 * UNIFORMITY_FACTOR
-run_minutes    = ceil(litres / system_flow_lph * 60)   # 0 if no irrigation
+emitters        = area_m2 / (row_spacing_m * emitter_spacing_m)
+system_flow_lph = round(emitters * flow_lph, 2)          # as shown in assumptions
+litres          = round(irrigation_mm * area_m2 * UNIFORMITY_FACTOR)   # irrigation_mm as shown
+run_minutes     = ceil(litres / system_flow_lph * 60)    # shown litres and shown flow; 0 if no irrigation
 ```
-`emitters` is a real number (not rounded). Totals = sums of the daily rounded `litres` and `run_minutes`, so they match the days shown.
+Totals = sums of the daily rounded `litres` and `run_minutes`, so they match the days shown.
 
 ## 6. Output
-Per day: `date, stage, et0_mm, rain_mm, kc, need_mm, irrigation_mm, litres, run_minutes, soil_water_end_mm, soil_water_end_pct, stale, reason`.
+Per day: `date, stage, et0_mm, rain_mm, kc, need_mm, irrigation_mm, litres, run_minutes, soil_capacity_mm, soil_water_end_mm, soil_water_end_pct, stale, reason`.
 Top level: `plot_id, plot_name, crop, soil_moisture_input, generated_at, forecast_fetched_at, season_ended, warnings[{code,message}] (SEASON_ENDED, STALE_FORECAST), today {date, irrigate, run_minutes}, assumptions {root_depth_m, soil_capacity_mm, irrigate_when_depleted_pct, uniformity_factor, emitters, system_flow_lph, climate_adjustment {wind_2m_ms, rh_min_pct, kc_change}}, totals {litres, run_minutes}`.
 `assumptions.root_depth_m` and `soil_capacity_mm` (TAW) are today's values. `irrigate_when_depleted_pct` = 30.
 
 ## 7. Rounding and errors
 - mm (need, irrigation, soil water, et0, rain): 2 decimals. kc and percentages: 2 decimals (assumption, say so if asked). litres: whole number (nearest). minutes: `ceil`.
-- Round only the output, never a value used in the next day's step.
+- Each step uses the rounded values that are shown (auditability: a reader can reproduce every number from the response with a calculator). Hidden full-precision values are not carried between steps.
 - Missing or invalid input (no soil_moisture, soil_moisture outside 0-10, missing forecast field, zero spacing, unknown crop_id) is an error. Never substitute 0 or a default.

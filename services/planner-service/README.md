@@ -59,13 +59,13 @@ Errors are `application/problem+json` with a `code`:
   },
   "days": [
     { "date": "2026-11-18", "stage": "mid", "et0_mm": 5.0, "rain_mm": 0.0, "kc": 1.15, "need_mm": 5.75,
-      "irrigation_mm": 21.0, "litres": 23100, "run_minutes": 832, "soil_water_end_mm": 46.75,
+      "irrigation_mm": 21.0, "litres": 23100, "run_minutes": 832, "soil_capacity_mm": 52.5, "soil_water_end_mm": 46.75,
       "soil_water_end_pct": 89.05, "stale": false, "reason": "Irrigate: depletion reached 30% of soil capacity" },
     { "date": "2026-11-19", "stage": "mid", "et0_mm": 5.0, "rain_mm": 0.0, "kc": 1.15, "need_mm": 5.75,
-      "irrigation_mm": 0.0, "litres": 0, "run_minutes": 0, "soil_water_end_mm": 41.0,
+      "irrigation_mm": 0.0, "litres": 0, "run_minutes": 0, "soil_capacity_mm": 52.5, "soil_water_end_mm": 41.0,
       "soil_water_end_pct": 78.1, "stale": false, "reason": "No irrigation: depletion below 30% of soil capacity" },
     { "date": "2026-11-20", "stage": "mid", "et0_mm": 5.0, "rain_mm": 0.0, "kc": 1.15, "need_mm": 5.75,
-      "irrigation_mm": 0.0, "litres": 0, "run_minutes": 0, "soil_water_end_mm": 35.25,
+      "irrigation_mm": 0.0, "litres": 0, "run_minutes": 0, "soil_capacity_mm": 52.5, "soil_water_end_mm": 35.25,
       "soil_water_end_pct": 67.14, "stale": false, "reason": "No irrigation: depletion below 30% of soil capacity" }
   ],
   "totals": { "litres": 23100, "run_minutes": 832 }
@@ -86,12 +86,13 @@ All irrigation numbers come from [`engine.py`](engine.py), a pure module (no HTT
 | `irrigation_mm` | Each day: rain counts only if `rain >= 0.2 x ET0` (it lowers depletion, the excess is lost). Then, if depletion >= 30 % of capacity, irrigate back to full. Then `need_mm` is added to depletion. The first day starts at `capacity x (1 - soil_moisture/10)`. |
 | `litres` | `irrigation_mm x area_m2 x UNIFORMITY_FACTOR` (nearest litre). Rain is not multiplied. |
 | `run_minutes` | `ceil(litres / (emitters x flow_lph) x 60)`, where `emitters = area / (row spacing x emitter spacing)`. 0 without irrigation. |
-| `soil_water_end_mm`, `_pct` | Capacity minus depletion at the end of the day, and as % of that day's capacity. |
+| `soil_capacity_mm` (per day) | The capacity of that day (it grows with the roots), rounded to 0.01 mm. |
+| `soil_water_end_mm`, `_pct` | Capacity minus depletion at the end of the day, and `end_mm / soil_capacity_mm x 100`. |
 | `stale`, `warnings` | `stale` is the weather-service's flag, on every day. `STALE_FORECAST` then appears in `warnings`. `SEASON_ENDED` appears when today is past the crop's usual season length; the plan is still returned, with Kc end. |
 | `forecast_fetched_at` | When the forecast was fetched from the provider. The frontend can show its age. |
 | `totals` | Sums of the daily rounded litres and minutes. |
 
-Rounding: mm, Kc and % to 2 decimals, litres to the nearest whole, minutes always up. Full precision is kept inside the calculation.
+Rounding: mm, Kc and % to 2 decimals, litres to the nearest whole, minutes always up. Each step uses the rounded numbers that the response shows, so every number can be reproduced with a calculator from the others (`need_mm = round(kc x et0_mm, 2)`, `pct = round(end_mm / soil_capacity_mm x 100, 2)`, `litres = round(irrigation_mm x area x uniformity)`, `run_minutes = ceil(litres / system_flow_lph x 60)`). The only unshown inputs are the plot's area, the crop file and the day's stage.
 
 ## Upstream calls and failures
 

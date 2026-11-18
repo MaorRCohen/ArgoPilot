@@ -85,6 +85,7 @@ class Day(BaseModel):
     irrigation_mm: float
     litres: int
     run_minutes: int
+    soil_capacity_mm: float
     soil_water_end_mm: float
     soil_water_end_pct: float
     stale: bool
