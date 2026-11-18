@@ -721,3 +721,46 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** case A was calculated by the owner. Cases B and C were completed with the AI and the owner re-checks them before the presentation. The tests use these tables as expected values. The script found no disagreement with the rules: every mm, litre, minute and percentage matches.
 - **Why:** the three cases cover a mid-season refill, all three rain outcomes (counted, ignored under 0.2 ET0, counted and lost above capacity), and first planting with a root zone that grows. Checking with a separate script keeps the expected values independent of the code under test.
 - **Research:** the rules themselves are in entries 109-116 and `docs/research/fao56.md`. No new source was needed.
+
+### 118. The irrigation engine is a pure module
+- **AI suggested:** `engine.py` takes plain data (plot, crop profile, soil, emitter flow, forecast days with their dates, soil_moisture, uniformity factor) and returns the plan. No HTTP, no clock, no file reading. `profiles.py` reads `crop_profiles.json`, `clients.py` talks HTTP, `main.py` only wires them.
+- **I decided:** (confirm) accepted.
+- **Why:** the engine can be tested alone with the three hand-calculated cases, and a bug in a number can only be in one file.
+- **Research:** none; structure only.
+
+### 119. No retries in the planner: the weather-service is the only retry point
+- **AI suggested:** one call per upstream per request, no retry loop in the planner.
+- **I decided:** (confirm) accepted. A failure becomes 503 `UPSTREAM_UNAVAILABLE` with `Retry-After`; a test asserts exactly one call per upstream.
+- **Why:** retries at every hop multiply (planner 3 x weather 3 = 9 provider calls) and the caller waits longer than any timeout it set.
+- **Research:** none (same reasoning as entries 91-102).
+
+### 120. Timeouts: registry 1.0 s, weather 4.5 s
+- **AI suggested:** `REGISTRY_TIMEOUT_S` 1.0 and `WEATHER_TIMEOUT_S` 4.5, both settings. Each is applied twice: httpx per phase, and `asyncio.timeout` for the whole call.
+- **I decided:** (confirm) 1.0 s and 4.5 s.
+- **Why:** the registry answers in tens of ms (NFR-1.1), so 1 s is generous. The weather-service may spend its whole 4 s budget on retries before it sends a stale forecast: 4.5 s lets us receive that answer instead of giving up first and showing an error.
+- **Research:** weather-service budget from its README.
+
+### 121. A crop without a profile is 409 CONFLICT
+- **AI suggested:** 409 `CONFLICT` with a detail naming the crop and `crop_profiles.json`, checked before the weather call.
+- **I decided:** (confirm) accepted.
+- **Why:** the request is fine and the services are up; the data is incomplete (the registry has a crop the profile file lacks). 500 would look like a bug, 503 would invite a pointless retry, 404 would say the plot is missing.
+- **Research:** none.
+
+### 122. Choices the skill does not cover (please confirm each)
+- **AI suggested / I decided:** (confirm all)
+  1. `today` = the first forecast date (the weather-service's local "today" at the plot); the planner has no clock for plan dates. `generated_at` is the server's UTC clock.
+  2. `season_ended` is true when the first plan day is past the season length (later days may be `ended` without the flag).
+  3. A forecast date before planting (time-zone edge) is treated as the planting day (day 0).
+  4. `crop` in the response is the crop id (`"tomato"`); `plot_id` and `plot_name` come from the registry.
+  5. `reason` is one of four fixed texts: irrigate; rain counted; rain ignored; below trigger. Irrigation wins when rain was also counted.
+  6. Rounding: `root_depth_m` 3 decimals; `wind_2m_ms`, `rh_min_pct`, `kc_change`, `emitters`, `system_flow_lph` 2 decimals; `-0.0` printed as `0.0`. `run_minutes` is `ceil` of the value rounded to 9 decimals, so float noise (120.00000000001) does not add a minute.
+  7. Soil and emitter are read by id (`/v1/soils/{id}`, `/v1/emitters/{id}`), not by listing the catalogues.
+  8. The weather answer must have exactly `days` consecutive dates and every field, else 503 (weather-service): a short forecast must never be padded.
+  9. A registry 404 on the soil or emitter, or any non-200, is 503 (registry-service), not 404: the plot exists, its data is inconsistent.
+  10. When several upstreams fail in the same request, the first in this order is reported: plot, soil, emitter, weather.
+  11. Extra setting `RETRY_AFTER_S` (30 s) for the 503 when the failed service sent no `Retry-After`; same as the registry.
+  12. `UNIFORMITY_FACTOR` must be 1 or more.
+  13. The plot id is URL-quoted before it goes to the registry.
+  14. Unhandled errors: 500 with `code` `INTERNAL_ERROR` (the weather-service uses `UNAVAILABLE` there, which would be wrong here).
+- **Why:** each was needed to write working code and the skill is silent. Entries 109-117 stay as they are.
+- **Research:** none.
