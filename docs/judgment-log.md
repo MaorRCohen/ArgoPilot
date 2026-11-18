@@ -638,3 +638,14 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** `WARNING` for each failed attempt (cell key, attempt number, reason: error kind, status code, or the validation check that failed). `WARNING` when a stale forecast is served (with its age), `ERROR` when the answer is a 503. Never the API key or the provider URL.
 - **Why:** the first build was silent: a stale answer or a 503 had no visible cause, the same lesson as the silent 500 in the registry. This reverses the earlier "no logging" choice for this service, at the owner's request.
 - **Research:** test `test_each_failed_attempt_is_logged_with_cell_and_reason_and_never_the_key` set a fake key and failed before the httpx fix. Reasons are built from fixed texts, never from httpx's messages.
+
+## Step 19 – weather-service performance (NFR-2.3)
+
+### 106. The load test only asks for pre-warmed cells
+- **AI suggested:** none. The owner decided this before the script was written.
+- **I decided:** `perf/weather_load.js` warms three grid cells once (three provider calls, at the cell centres). The 2-minute run at 10 requests per second only asks for points inside those cells, with 1 to 7 days. Thresholds: p95 <= 100 ms, no failed request, no dropped iteration, all checks pass (status 200, `stale` false, days count right). If the warmup fails, the run aborts.
+- **Why:** NFR-2.3 is about the fresh path, the one served from memory with no provider call. A run that also hit uncached cells would measure Open-Meteo's response time and would send hundreds of extra calls to a free API. Open-Meteo's free tier is for non-commercial use and has a daily call limit (from memory, not re-checked on the pricing page). The "checks" threshold is my addition: without it a `stale: true` answer would still pass the other three thresholds.
+- **Research:** the usage limits quoted here are from memory, not re-checked online. Not run yet: the owner runs k6 and records the numbers in the README table.
+
+### 107. NFR-2.3 measured on the fresh path
+- **Result (2026-11-18, local WSL, freshly started service):** `fresh_forecast` at 10 req/s for 2 min: 1201 requests, 0 failed, 0 dropped, all checks 100%. p95 6.42 ms against the 100 ms target (avg 4.5, max 11.55). The warmup's 411 ms max is the only real Open-Meteo traffic and is not part of NFR-2.3.

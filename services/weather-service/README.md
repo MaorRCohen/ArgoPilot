@@ -128,6 +128,28 @@ All errors are `application/problem+json` (RFC 9457) with a `code` of `VALIDATIO
 
 From `services/weather-service`: `uv run pytest`. The tests never reach the internet: the provider is replaced with `httpx.MockTransport`, and time is frozen with time-machine. They ignore `.env`.
 
+## Performance
+
+NFR-2.3: a fresh forecast (no provider call) at p95 <= 100 ms with 10 requests per second. The k6 script [`perf/weather_load.js`](perf/weather_load.js) warms three grid cells once (the only calls to Open-Meteo), then sends 10 requests per second for 2 minutes to points inside those cells, with 1 to 7 days. It fails if p95 is above 100 ms, if any request fails, if any iteration is dropped, or if an answer is not `200` with `stale: false`.
+
+It never asks for an uncached cell, on purpose: that path is the provider's speed, not ours, and load on the free Open-Meteo tier is not allowed. Run it against a server that was just started (empty cache, so the warmup fetches once):
+
+```bash
+# terminal 1, from services/weather-service (needs internet for the warmup)
+uv run uvicorn main:app --host 127.0.0.1 --port 8001
+
+# terminal 2, from services/weather-service
+k6 run --quiet perf/weather_load.js 2>&1 | tee perf/results.txt
+```
+
+The base URL is `WEATHER_URL` (default `http://127.0.0.1:8001`). Read pass or fail from the ✓ and ✗ marks in the summary: `tee` hides k6's exit code.
+
+| Run | Date | Requests | Failed | Dropped | Checks | avg | med | p90 | p95 | p99 | max |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `fresh_forecast`, local WSL, freshly started service | 2026-11-18 | 1201 | 0 | 0 | 100% | 4.5 | 4.32 | 5.8 | 6.42 | 7.94 | 11.55 |
+
+All times are `http_req_duration` in ms. The warmup's longest request took 411 ms: those are the only real Open-Meteo calls of the run, and they are not part of NFR-2.3. Result: p95 6.42 ms, against the target of 100 ms. Raw output: `perf/results.txt`.
+
 ## Flow
 
 ```mermaid
