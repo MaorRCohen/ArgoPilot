@@ -32,7 +32,7 @@ def test_plan_for_case_a(api):
     assert body["totals"] == {"litres": 23100, "run_minutes": 832}
     assert body["assumptions"] == {
         "root_depth_m": 0.3, "soil_capacity_mm": 52.5, "irrigate_when_depleted_pct": 30, "uniformity_factor": 1.1,
-        "emitters": 1666.67, "system_flow_lph": 1666.67,
+        "emitters": 1666.67, "system_flow_lph": 1666.67, "application_rate_mm_per_h": 1.67,
         "climate_adjustment": {"wind_2m_ms": 2.0, "rh_min_pct": 45.0, "kc_change": 0.0}}
     assert [d["date"] for d in body["days"]] == ["2026-11-18", "2026-11-19", "2026-11-20"]
     assert set(body["days"][0]) == {"date", "stage", "et0_mm", "rain_mm", "kc", "need_mm", "irrigation_mm", "litres",
@@ -181,3 +181,14 @@ def test_a_hung_upstream_is_cut_by_the_timeout(api, service, setting):
     setattr(a.fake, service, HANG)
     body = problem(a.plan(), 503, "UPSTREAM_UNAVAILABLE")
     assert ("registry-service" if service == "plot" else "weather-service") in body["detail"]
+
+
+def test_dry_soil_is_capped_through_the_api(api):
+    body = api().plan(days=2, soil_moisture=0).json()
+    assert [w["code"] for w in body["warnings"]] == ["IRRIGATION_CAPPED"]
+    assert body["days"][0]["run_minutes"] == 1440 and body["days"][1]["irrigation_mm"] == 21.89
+
+
+def test_the_cap_is_a_setting(api):
+    body = api(max_run_minutes_per_day=600).plan(days=1, soil_moisture=0).json()
+    assert body["days"][0]["run_minutes"] <= 600

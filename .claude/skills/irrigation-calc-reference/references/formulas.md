@@ -35,7 +35,10 @@ depletion_0 = round(TAW_today x (1 - soil_moisture/10), 2)
 rain_eff   = rain_mm if rain_mm >= 0.2 * et0_mm else 0
 depletion  = round(max(depletion - rain_eff, 0), 2)  # RO = 0, excess lost (Annex 8, Ch. 8)
 if depletion >= 0.30 * TAW:                          # 30 % of the shown capacity
-    irrigation_mm = depletion; depletion = 0         # refill to full (Annex 8: I = Dr)
+    irrigation_mm = depletion                        # refill to full (Annex 8: I = Dr)
+    if run_minutes(irrigation_mm) > MAX_RUN_MINUTES_PER_DAY:   # section 5 formula
+        irrigation_mm = largest 0.01 mm amount with run_minutes <= the cap   # IRRIGATION_CAPPED
+    depletion = round(depletion - irrigation_mm, 2)  # a capped day leaves the rest for tomorrow
 else: irrigation_mm = 0
 need_mm    = round(kc * et0_mm, 2)                   # kc and et0 as shown
 depletion  = round(min(depletion + need_mm, TAW), 2) # Eq. 85/86
@@ -51,11 +54,12 @@ system_flow_lph = round(emitters * flow_lph, 2)          # as shown in assumptio
 litres          = round(irrigation_mm * area_m2 * UNIFORMITY_FACTOR)   # irrigation_mm as shown
 run_minutes     = ceil(litres / system_flow_lph * 60)    # shown litres and shown flow; 0 if no irrigation
 ```
+`application_rate_mm_per_h = round(system_flow_lph / area_m2, 2)` (always in `assumptions`). Daily cap: see section 4. The capped day's `reason` says it was capped at N h; the `IRRIGATION_CAPPED` warning (first capped day only) gives the needed mm, the rate, the hours `round(needed_mm x uniformity / rate)` and says a faster system changes only the time.
 Totals = sums of the daily rounded `litres` and `run_minutes`, so they match the days shown.
 
 ## 6. Output
 Per day: `date, stage, et0_mm, rain_mm, kc, need_mm, irrigation_mm, litres, run_minutes, soil_capacity_mm, soil_water_end_mm, soil_water_end_pct, stale, reason`.
-Top level: `plot_id, plot_name, crop, soil_moisture_input, generated_at, forecast_fetched_at, season_ended, warnings[{code,message}] (SEASON_ENDED, STALE_FORECAST), today {date, irrigate, run_minutes}, assumptions {root_depth_m, soil_capacity_mm, irrigate_when_depleted_pct, uniformity_factor, emitters, system_flow_lph, climate_adjustment {wind_2m_ms, rh_min_pct, kc_change}}, totals {litres, run_minutes}`.
+Top level: `plot_id, plot_name, crop, soil_moisture_input, generated_at, forecast_fetched_at, season_ended, warnings[{code,message}] (SEASON_ENDED, IRRIGATION_CAPPED, STALE_FORECAST), today {date, irrigate, run_minutes}, assumptions {root_depth_m, soil_capacity_mm, irrigate_when_depleted_pct, uniformity_factor, emitters, system_flow_lph, climate_adjustment {wind_2m_ms, rh_min_pct, kc_change}}, totals {litres, run_minutes}`.
 `assumptions.root_depth_m` and `soil_capacity_mm` (TAW) are today's values. `irrigate_when_depleted_pct` = 30.
 
 ## 7. Rounding and errors

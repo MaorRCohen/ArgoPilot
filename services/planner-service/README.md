@@ -55,6 +55,7 @@ Errors are `application/problem+json` with a `code`:
     "uniformity_factor": 1.1,
     "emitters": 1666.67,
     "system_flow_lph": 1666.67,
+    "application_rate_mm_per_h": 1.67,
     "climate_adjustment": { "wind_2m_ms": 2.0, "rh_min_pct": 45.0, "kc_change": 0.0 }
   },
   "days": [
@@ -88,8 +89,10 @@ All irrigation numbers come from [`engine.py`](engine.py), a pure module (no HTT
 | `run_minutes` | `ceil(litres / (emitters x flow_lph) x 60)`, where `emitters = area / (row spacing x emitter spacing)`. 0 without irrigation. |
 | `soil_capacity_mm` (per day) | The capacity of that day (it grows with the roots), rounded to 0.01 mm. |
 | `soil_water_end_mm`, `_pct` | Capacity minus depletion at the end of the day, and `end_mm / soil_capacity_mm x 100`. |
-| `stale`, `warnings` | `stale` is the weather-service's flag, on every day. `STALE_FORECAST` then appears in `warnings`. `SEASON_ENDED` appears when today is past the crop's usual season length; the plan is still returned, with Kc end. |
+| `stale`, `warnings` | `stale` is the weather-service's flag, on every day. `STALE_FORECAST` then appears in `warnings`. `IRRIGATION_CAPPED` appears when a refill was cut to the daily cap. `SEASON_ENDED` appears when today is past the crop's usual season length; the plan is still returned, with Kc end. |
 | `forecast_fetched_at` | When the forecast was fetched from the provider. The frontend can show its age. |
+| `application_rate_mm_per_h` | `round(system_flow_lph / area_m2, 2)`: how many mm of water the system applies per hour. |
+| daily cap, `IRRIGATION_CAPPED` | A day has 1440 minutes (`MAX_RUN_MINUTES_PER_DAY`). If a refill would run longer, `irrigation_mm` is the largest 0.01 mm amount that fits (same litres and minutes formulas); the rest stays in the depletion and is refilled the next morning, capped again if needed. The day's `reason` says it was capped, and one warning gives the needed mm, the rate, the hours a full refill needs, and that a faster system shortens the time, never the amount of water. |
 | `totals` | Sums of the daily rounded litres and minutes. |
 
 Rounding: mm, Kc and % to 2 decimals, litres to the nearest whole, minutes always up. Each step uses the rounded numbers that the response shows, so every number can be reproduced with a calculator from the others (`need_mm = round(kc x et0_mm, 2)`, `pct = round(end_mm / soil_capacity_mm x 100, 2)`, `litres = round(irrigation_mm x area x uniformity)`, `run_minutes = ceil(litres / system_flow_lph x 60)`). The only unshown inputs are the plot's area, the crop file and the day's stage.
@@ -138,6 +141,7 @@ sequenceDiagram
 | `REGISTRY_TIMEOUT_S` | `1.0` | Seconds to wait for one registry answer. |
 | `WEATHER_TIMEOUT_S` | `4.5` | Seconds to wait for the weather answer. |
 | `RETRY_AFTER_S` | `30` | `Retry-After` on a 503 when the failed service sent none. |
+| `MAX_RUN_MINUTES_PER_DAY` | `1440` | Longest run per day; a bigger refill is spread over several days. |
 | `UNIFORMITY_FACTOR` | `1.1` | Drip non-uniformity: multiplies irrigation litres only. Must be 1 or more. |
 | `CROP_PROFILES_PATH` | `crop_profiles.json` next to `config.py` | Crop values file. |
 

@@ -37,8 +37,8 @@ NORTH = engine.PlotInput(area_m2=1000, row_spacing_m=1.5, emitter_spacing_m=0.4,
 GREENHOUSE = engine.PlotInput(area_m2=400, row_spacing_m=1.2, emitter_spacing_m=0.3, planting_date=D0)
 
 
-def plan(plot=NORTH, crop=TOMATO, soil=175, flow=1.0, forecast=None, moisture=6, uf=1.1):
-    return engine.build_plan(plot, crop, soil, flow, forecast or days(), moisture, uf)
+def plan(plot=NORTH, crop=TOMATO, soil=175, flow=1.0, forecast=None, moisture=6, uf=1.1, cap=1440):
+    return engine.build_plan(plot, crop, soil, flow, forecast or days(), moisture, uf, cap)
 
 
 def day_row(d):
@@ -64,6 +64,7 @@ def test_case_a_tomato_mid_season():
     a = p.assumptions
     assert (a.root_depth_m, a.soil_capacity_mm, a.irrigate_when_depleted_pct) == (0.3, 52.5, 30)
     assert (a.uniformity_factor, a.emitters, a.system_flow_lph) == (1.1, 1666.67, 1666.67)
+    assert a.application_rate_mm_per_h == 1.67
     assert a.climate_adjustment == engine.ClimateAdjustment(wind_2m_ms=2.0, rh_min_pct=45.0, kc_change=0.0)
     assert not p.season_ended and p.warnings == []
 
@@ -240,7 +241,7 @@ def test_fresh_forecast_has_no_stale_flag():
 
 def test_depletion_is_capped_at_capacity():
     # Moisture 0 and a huge ET0: the bucket cannot be more than empty.
-    p = plan(forecast=days(2, et0=500.0), moisture=0)
+    p = plan(forecast=days(2, et0=500.0), moisture=0, cap=10**6)
     assert p.days[0].soil_water_end_mm == 0.0
     assert p.days[1].irrigation_mm == pytest.approx(p.assumptions.soil_capacity_mm, abs=0.1)
 
@@ -253,7 +254,7 @@ def test_soil_moisture_out_of_range_is_an_error(moisture):
 
 def test_empty_forecast_is_an_error():
     with pytest.raises(ValueError, match="forecast"):
-        engine.build_plan(NORTH, TOMATO, 175, 1.0, [], 5, 1.1)
+        engine.build_plan(NORTH, TOMATO, 175, 1.0, [], 5, 1.1, 1440)
 
 
 # --- auditability: every number can be reproduced from the numbers shown ---------------------------
@@ -268,6 +269,8 @@ def audit_plans():
         "mid season": plan(),
         "rain": plan(forecast=days(7, rain=(10.0, 0.8, 20.0, 1.0, 0, 3.3, 0)), moisture=4),
         "season ended": plan(plot=planted(TOMATO.total_days + 5), forecast=days(7, et0=3.37)),
+        "capped": plan(moisture=0, forecast=days(4, et0=2.76, wind=5.1, rh=31.0)),
+        "capped, small cap": plan(moisture=2, cap=300, forecast=days(5)),
         "first planting": plan(plot=GREENHOUSE, crop=PEPPER, flow=2.0, moisture=0, forecast=days(7, et0=2.76)),
         "climate adjustment": plan(plot=planted(dev_mid), forecast=days(7, et0=2.76, wind=5.1, rh=31.0)),
         "late stage, odd numbers": plan(plot=planted(late), forecast=days(7, et0=4.37, wind=3.3, rh=61.0), moisture=3),
@@ -286,6 +289,8 @@ def test_every_number_is_reproducible_from_the_shown_numbers(name):
         assert d.run_minutes == expected_minutes
         assert d.soil_water_end_pct == round(d.soil_water_end_mm / d.soil_capacity_mm * 100, 2)
     assert p.days[0].soil_capacity_mm == p.assumptions.soil_capacity_mm
+    assert all(d.run_minutes <= (300 if name == "capped, small cap" else 1440) for d in p.days)
+    assert p.assumptions.application_rate_mm_per_h == round(flow / NORTH_OR(p, name).area_m2, 2)
 
 
 def NORTH_OR(p, name):
@@ -300,3 +305,44 @@ def test_the_water_balance_adds_up_in_the_shown_numbers():
             shown_depletion = before.soil_capacity_mm - before.soil_water_end_mm
             assert after.soil_capacity_mm - after.soil_water_end_mm == pytest.approx(
                 shown_depletion + after.need_mm, abs=0.0051)
+
+
+# --- daily cap on the run time -------------------------------------------------------------------
+
+CAPPED = "Irrigate, capped at 24 h a day: the rest of the refill carries to the next day"
+
+
+def test_north_block_dry_soil_is_capped_at_24h_and_the_rest_carries_over():
+    # Hand calculation: TAW 52.5, depletion 52.5. 1440 min at 1666.67 L/h = 40000.08 L; / (1000 m2 x 1.1)
+    # = 36.36 mm (36.37 mm = 40007 L = 1441 min). Left 16.14, + need 5.75 = 21.89 -> irrigated next morning.
+    p = plan(moisture=0, forecast=days(2))
+    assert [day_row(d) for d in p.days] == [
+        ("2026-11-18", "mid", 5.0, 0.0, 1.15, 5.75, 36.36, 39996, 1440, 30.61, 58.30, False, CAPPED),
+        ("2026-11-19", "mid", 5.0, 0.0, 1.15, 5.75, 21.89, 24079, 867, 46.75, 89.05, False, IRRIGATE),
+    ]
+    assert p.today == engine.Today(date=D0, irrigate=True, run_minutes=1440)
+    assert [w.code for w in p.warnings] == ["IRRIGATION_CAPPED"]
+    assert p.assumptions.application_rate_mm_per_h == 1.67
+
+
+def test_capped_warning_says_need_rate_hours_and_that_speed_changes_only_time():
+    (w,) = plan(moisture=0, forecast=days(2)).warnings
+    assert "52.5 mm" in w.message and "1.67 mm/h" in w.message and "35 h" in w.message
+    assert "time" in w.message and "several days" in w.message
+
+
+def test_capped_warning_appears_once_even_if_several_days_are_capped():
+    p = plan(moisture=2, cap=300, forecast=days(5))
+    assert sum(d.run_minutes == 300 or d.reason.startswith("Irrigate, capped") for d in p.days) >= 2
+    assert [w.code for w in p.warnings] == ["IRRIGATION_CAPPED"]
+
+
+def test_the_cap_comes_from_the_argument():
+    reason = plan(moisture=0, forecast=days(1), cap=720).days[0]
+    assert reason.run_minutes <= 720 and reason.reason == "Irrigate, capped at 12 h a day: the rest of the refill carries to the next day"
+
+
+def test_below_the_cap_nothing_changes():
+    p = plan(forecast=days(2))
+    assert p.days[0].irrigation_mm == 21.0 and p.days[0].reason == IRRIGATE
+    assert p.warnings == []

@@ -103,6 +103,7 @@ class Assumptions:
     uniformity_factor: float
     emitters: float
     system_flow_lph: float
+    application_rate_mm_per_h: float
     climate_adjustment: ClimateAdjustment
 
 
@@ -159,6 +160,14 @@ def _climate_adjustment(crop: CropProfile, forecast: list[WeatherDay]) -> tuple[
     return u2, rh, adjustment
 
 
+def _capped_warning(needed_mm: float, rate_mm_per_h: float, uniformity_factor: float) -> Warning:
+    hours = round(needed_mm * uniformity_factor / rate_mm_per_h)
+    return Warning("IRRIGATION_CAPPED", (
+        f"A full refill needs {needed_mm} mm: about {hours} h of running at this system's rate of "
+        f"{rate_mm_per_h} mm/h (including the {uniformity_factor} uniformity factor). A day has only 24 h, so the "
+        "plan spreads the refill over several days. A faster system would shorten the time, not the amount of water."))
+
+
 def build_plan(
     plot: PlotInput,
     crop: CropProfile,
@@ -167,6 +176,7 @@ def build_plan(
     forecast: list[WeatherDay],
     soil_moisture: int,
     uniformity_factor: float,
+    max_run_minutes: int,
 ) -> Plan:
     if not forecast:
         raise ValueError("forecast has no days")
@@ -175,7 +185,7 @@ def build_plan(
     for name, value in [("area_m2", plot.area_m2), ("row_spacing_m", plot.row_spacing_m),
                         ("emitter_spacing_m", plot.emitter_spacing_m), ("flow_lph", flow_lph),
                         ("available_water_mm_per_m", available_water_mm_per_m),
-                        ("uniformity_factor", uniformity_factor)]:
+                        ("uniformity_factor", uniformity_factor), ("max_run_minutes", max_run_minutes)]:
         if not value > 0:
             raise ValueError(f"{name} must be greater than 0")
 
@@ -185,10 +195,27 @@ def build_plan(
 
     emitters = plot.area_m2 / (plot.row_spacing_m * plot.emitter_spacing_m)
     system_flow_lph = _r2(emitters * flow_lph)  # the shown value: minutes are computed from it
+    application_rate = _r2(system_flow_lph / plot.area_m2)  # mm of water per hour
 
     def day_index(day: WeatherDay) -> int:
         # A date before planting (time-zone edge) counts as the planting day.
         return max((day.date - plot.planting_date).days, 0)
+
+    def litres_for(mm: float) -> int:
+        return round(mm * plot.area_m2 * uniformity_factor)
+
+    def minutes_for(litres: int) -> int:
+        # round(.., 9) keeps float noise (120.00000000001) from adding a minute.
+        return math.ceil(round(litres / system_flow_lph * 60, 9)) if litres > 0 else 0
+
+    def largest_mm_within_cap() -> float:
+        """The largest 0.01 mm amount whose run time (same formula as below) is within the cap."""
+        hundredths = int(max_run_minutes / 60 * system_flow_lph / (plot.area_m2 * uniformity_factor) * 100)
+        while hundredths > 0 and minutes_for(litres_for(hundredths / 100)) > max_run_minutes:
+            hundredths -= 1
+        while minutes_for(litres_for((hundredths + 1) / 100)) <= max_run_minutes:
+            hundredths += 1
+        return hundredths / 100
 
     def taw(d: int) -> float:
         # The shown capacity: mm per m x root depth of that day, rounded to 0.01 mm.
@@ -198,6 +225,7 @@ def build_plan(
     # number can be reproduced by hand from the other shown numbers (see SKILL.md, rounding).
     depletion = _r2(taw(day_index(forecast[0])) * (1 - soil_moisture / 10))
     days: list[DayPlan] = []
+    capped_warning: Warning | None = None
     for day in forecast:
         d = day_index(day)
         capacity = taw(d)
@@ -208,17 +236,26 @@ def build_plan(
         if rain_counted:
             depletion = _r2(max(depletion - rain, 0.0))
         irrigation_mm = 0.0
+        capped = False
         # round(.., 9): float noise must not decide an exact 30 % (5.25 vs 0.3 x 17.5).
         if round(depletion - TRIGGER_FRACTION * capacity, 9) >= 0:
-            irrigation_mm, depletion = depletion, 0.0
+            irrigation_mm = depletion
+            if minutes_for(litres_for(irrigation_mm)) > max_run_minutes:
+                # More than the day can hold: water what fits, the rest stays in the depletion.
+                capped = True
+                irrigation_mm = largest_mm_within_cap()
+                if capped_warning is None:
+                    capped_warning = _capped_warning(depletion, application_rate, uniformity_factor)
+            depletion = _r2(depletion - irrigation_mm)
         need_mm = _r2(kc * et0)
         depletion = _r2(min(depletion + need_mm, capacity))
         end_mm = _r2(capacity - depletion)
 
-        litres = round(irrigation_mm * plot.area_m2 * uniformity_factor)
-        # round(.., 9) keeps float noise (120.00000000001) from adding a minute.
-        run_minutes = math.ceil(round(litres / system_flow_lph * 60, 9)) if litres > 0 else 0
-        if irrigation_mm > 0:
+        litres = litres_for(irrigation_mm)
+        run_minutes = minutes_for(litres)
+        if capped:
+            reason = f"Irrigate, capped at {max_run_minutes / 60:g} h a day: the rest of the refill carries to the next day"
+        elif irrigation_mm > 0:
             reason = REASON_IRRIGATE
         elif rain > 0:
             reason = REASON_RAIN_COUNTED if rain_counted else REASON_RAIN_IGNORED
@@ -238,6 +275,8 @@ def build_plan(
         warnings.append(Warning("SEASON_ENDED", (
             f"The usual season length ({crop.total_days} days) has passed; the plan uses the end-of-season "
             f"Kc {_r2(kc_end)}. Check whether the crop is still in the field.")))
+    if capped_warning:
+        warnings.append(capped_warning)
     if any(d.stale for d in days):
         warnings.append(Warning("STALE_FORECAST", "The forecast is not fresh: the weather provider did not answer, "
                                                   "so the last known forecast was used."))
@@ -252,6 +291,7 @@ def build_plan(
             uniformity_factor=uniformity_factor,
             emitters=_r2(emitters),
             system_flow_lph=system_flow_lph,
+            application_rate_mm_per_h=application_rate,
             climate_adjustment=ClimateAdjustment(wind_2m_ms=_r2(u2), rh_min_pct=_r2(rh), kc_change=_r2(adjustment)),
         ),
         days=days,

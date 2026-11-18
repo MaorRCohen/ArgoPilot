@@ -49,7 +49,7 @@ class WeatherForecast(Upstream):
 
 
 class Warning(BaseModel):
-    code: Literal["SEASON_ENDED", "STALE_FORECAST"]
+    code: Literal["SEASON_ENDED", "IRRIGATION_CAPPED", "STALE_FORECAST"]
     message: str
 
 
@@ -72,6 +72,7 @@ class Assumptions(BaseModel):
     uniformity_factor: float
     emitters: float
     system_flow_lph: float
+    application_rate_mm_per_h: float
     climate_adjustment: ClimateAdjustment
 
 

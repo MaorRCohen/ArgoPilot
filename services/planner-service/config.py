@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     retry_after_s: int = Field(default=30, ge=1)
     # Extra litres for drip non-uniformity (1.1 = 10 %). Applied to irrigation only, never to rain.
     uniformity_factor: float = Field(default=1.1, ge=1)
+    # A day has 1440 minutes: more cannot be run. The rest of a big refill carries to the next day.
+    max_run_minutes_per_day: int = Field(default=1440, ge=1)
     crop_profiles_path: Path = SERVICE_DIR / "crop_profiles.json"
 
 

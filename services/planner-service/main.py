@@ -73,6 +73,7 @@ async def get_plan(
         [engine.WeatherDay(**d.model_dump(), stale=forecast.stale) for d in forecast.days],
         soil_moisture,
         settings.uniformity_factor,
+        settings.max_run_minutes_per_day,
     )
     return PlanResponse(
         plot_id=plot.id,
