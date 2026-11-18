@@ -1,6 +1,6 @@
 # Decisions and why (irrigation-calc-reference)
 
-All decided by the owner; logged in `docs/judgment-log.md` (entries from 109). Sources: FAO-56 via `services/planner-service/docs/research/fao56.md`.
+All decided by the owner; logged in `docs/judgment-log.md` (entries from 110). Sources: FAO-56 via `services/planner-service/docs/research/fao56.md`.
 
 | Decision | Instead of | Why |
 |---|---|---|

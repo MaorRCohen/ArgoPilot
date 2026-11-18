@@ -3,7 +3,7 @@ import { getJson, type Result } from "./http";
 
 export type Farm = { id: string; name: string };
 export type Crop = { id: string; name: string };
-export type Plot = { id: string; farm_id: string; name: string; area_m2: number; crop_id: string };
+export type Plot = { id: string; farm_id: string; name: string; area_m2: number; crop_id: string; soil_id: string };
 
 const TIMEOUT_MS = 3000;
 

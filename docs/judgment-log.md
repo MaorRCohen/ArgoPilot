@@ -660,7 +660,7 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 
 ## Step 20 – weather-service: wind and humidity
 
-### 108. Add wind and minimum humidity to every day
+### 109. Add wind and minimum humidity to every day
 - **AI suggested:** names `wind_speed_10m_mean` and `relative_humidity_2m_min`, `wind_speed_unit=ms`, and the checks: wind not negative, humidity from 0 to 100, units `m/s` and `%`, both rounded to 2 decimals like the sum of rain.
 - **I decided:** each day gets `wind_10m_ms` and `rh_min_pct`, after `rain_mm`. FR-2.8 applies: a missing field, a null, a non-number, a negative wind, a humidity outside 0-100 or a wrong unit is a provider failure (retry, stale or 503). Never a default. The cache is in memory, so a restart is enough, no migration.
 - **Why:** so the planner can apply the FAO-56 climate adjustment of Kc (Eq. 62 and 65), which needs `u2` and `RHmin`. The system is global, and in hot, dry, windy places Kc mid can be about 10% higher. The wind stays at 10 m here: the conversion to 2 m (FAO Eq. 47) is the planner's job, so this service stays crop-agnostic.
@@ -668,85 +668,85 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 
 ## Step 21 – irrigation-calc-reference skill and crop data
 
-### 109. Crop values live in crop_profiles.json, not in code
+### 110. Crop values live in crop_profiles.json, not in code
 - **AI suggested:** a data-only JSON file keyed by the registry crop id (`tomato`, `bell-pepper`), with Kc ini/mid/end, height h, all Table 11 stage rows (one marked default) and a `source` next to every value.
 - **I decided:** `services/planner-service/crop_profiles.json` is the single source of crop values. Adding a crop means adding an entry, not changing code. The default stage row is the Mediterranean one for both crops.
 - **Why:** the numbers can be checked and changed without touching formulas, and every value shows where it came from.
 - **Research:** FAO's own tools (CropWat, AquaCrop) keep crop data in crop files (from memory, not re-checked). Values from FAO-56 Tables 11 and 12 as read in `docs/research/fao56.md`. Pepper init is printed "25/30" in Table 11; 30 is stored because 30+35+40+20 = 125 (AI inference, not stated by FAO).
 
-### 110. Drip root depth and a 30 % trigger instead of FAO's values
+### 111. Drip root depth and a 30 % trigger instead of FAO's values
 - **AI suggested:** FAO Table 22 (tomato 0.7-1.5 m, pepper 0.5-1.0 m) and p (0.40 / 0.30).
 - **I decided:** root depth 0.10 m at planting, linear to 0.30 m at the end of the development stage, then 0.30 m. Irrigate when depletion reaches 30 % of TAW. The instructor's "half" is a simplification.
 - **Why:** Table 22 is for deep, non-drip roots (its footnote 1). On drip, most feeder roots are in the top 25-30 cm, so a bigger Zr would count water the roots cannot reach. FAO-56 has no rule for TAW under drip (gap in the research file).
 - **Research:** WA DPIRD "Drip irrigating tomatoes on sand" (75 mm at transplant to 300 mm mature, most feeder roots 0-25 cm), UF/IFAS root distribution, Purdue (pepper, upper foot). Trigger: UC 20-30 %, UF/IFAS 33 %. These sources are the owner's, not re-checked by the AI.
 
-### 111. Tomato Kc end is 0.80
+### 112. Tomato Kc end is 0.80
 - **AI suggested:** FAO gives 0.70-0.90 for tomato and no rule to pick inside the range (fao56.md §2).
 - **I decided:** 0.80, the middle of the range. The range is kept in the file.
 - **Why:** an arbitrary end of the range would bias every late-season plan. The middle is the least biased choice.
 - **Research:** FAO-56 Table 12 and Ch. 6 (Kc end is high if irrigated until fresh harvest, low if the crop dries in the field; no number).
 
-### 112. Rain rule: ignore under 0.2 ET0, runoff 0
+### 113. Rain rule: ignore under 0.2 ET0, runoff 0
 - **AI suggested:** FAO-56 has no effective-rainfall table (gap). It has the 0.2 ET0 skip rule (Ch. 8) and Annex 8 sets runoff to zero.
 - **I decided:** rain under 0.2 x ET0 is ignored, otherwise all of it reduces depletion; runoff 0; depletion never below 0 (excess is lost).
 - **Why:** it uses only what FAO states and avoids inventing a percentage.
 - **Research:** FAO-56 Ch. 8 (Eq. 85, limits on Dr), Annex 8 assumptions.
 
-### 113. Uniformity factor 1.1
+### 114. Uniformity factor 1.1
 - **AI suggested:** FAO-56 gives no rule for application uniformity or efficiency (gap).
 - **I decided:** `UNIFORMITY_FACTOR` = 1.1, a setting in the planner's `config.py`, applied only to irrigation litres, never to rain.
 - **Why:** drip emitters do not deliver the same amount everywhere; 10 % extra covers the dry spots. Rain is not delivered by emitters.
 - **Research:** UC drip non-uniformity 1.1-1.2 (the owner's source, not re-checked by the AI).
 
-### 114. soil_moisture 0-10 entered by the grower, no stored state
+### 115. soil_moisture 0-10 entered by the grower, no stored state
 - **AI suggested:** none; this is the instructor's requirement (the planner keeps no state between runs).
 - **I decided:** `soil_moisture` is required, 0 to 10, 0 = completely dry or first planting. Start depletion = TAW x (1 - soil_moisture/10). Missing or out of range is an error.
 - **Why:** with no stored state, the grower's reading is the only way to know today's wetness.
 - **Research:** USDA "feel and appearance" method (a grower can judge soil wetness by hand; the owner's source, not re-checked). FAO Eq. 87 starts depletion from a measured water content.
 
-### 115. Season ended is a warning, not an error
+### 116. Season ended is a warning, not an error
 - **AI suggested:** FAO-56 gives stage lengths "indicative" only (Table 11 footnote), so a plot can be past them while the crop still grows.
 - **I decided:** after the total season length, stage is `"ended"`, Kc end is used, `season_ended` is true and the warning `SEASON_ENDED` is added. The grower still gets the plan.
 - **Why:** an error would leave the grower with nothing for a crop that is still in the field.
 - **Research:** FAO-56 Table 11 footnote and Ch. 6 text (lengths vary with region, climate and variety).
 
-### 116. Climate adjustment uses the plan-days average
+### 117. Climate adjustment uses the plan-days average
 - **AI suggested:** FAO Eq. 62 (Kc mid) and Eq. 65 (Kc end, only when Kc end >= 0.45), with u2 from the 10 m wind by Eq. 47.
 - **I decided:** one adjustment from the average u2 and RHmin over the plan days, clamped to 1-6 m/s and 20-80 %, added to Kc mid and Kc end. Reported in `assumptions.climate_adjustment`.
 - **Why:** FAO averages over a stage, not one day, so one windy day must not move Kc. Clamping is our reading of "the limits should be observed" (FAO does not say what to do outside them).
 - **Research:** `docs/research/fao56.md` §5. Eq. 47 (`u2 = u10 x 4.87 / ln(67.8 z - 5.42)`) is from FAO Ch. 3 and is not in the research file: not re-checked yet.
 
-### 117. Three hand-checked worked cases as test expectations
+### 118. Three hand-checked worked cases as test expectations
 - **AI suggested:** fill the three empty cases (A tomato mid-season, B the same with rain, C pepper at first planting) with per-day tables, and check every number against the rules with a script outside the repo.
 - **I decided:** case A was calculated by the owner. Cases B and C were completed with the AI and the owner re-checks them before the presentation. The tests use these tables as expected values. The script found no disagreement with the rules: every mm, litre, minute and percentage matches.
 - **Why:** the three cases cover a mid-season refill, all three rain outcomes (counted, ignored under 0.2 ET0, counted and lost above capacity), and first planting with a root zone that grows. Checking with a separate script keeps the expected values independent of the code under test.
-- **Research:** the rules themselves are in entries 109-116 and `docs/research/fao56.md`. No new source was needed.
+- **Research:** the rules themselves are in entries 110-117 and `docs/research/fao56.md`. No new source was needed.
 
-### 118. The irrigation engine is a pure module
+### 119. The irrigation engine is a pure module
 - **AI suggested:** `engine.py` takes plain data (plot, crop profile, soil, emitter flow, forecast days with their dates, soil_moisture, uniformity factor) and returns the plan. No HTTP, no clock, no file reading. `profiles.py` reads `crop_profiles.json`, `clients.py` talks HTTP, `main.py` only wires them.
 - **I decided:** (confirm) accepted.
 - **Why:** the engine can be tested alone with the three hand-calculated cases, and a bug in a number can only be in one file.
 - **Research:** none; structure only.
 
-### 119. No retries in the planner: the weather-service is the only retry point
+### 120. No retries in the planner: the weather-service is the only retry point
 - **AI suggested:** one call per upstream per request, no retry loop in the planner.
 - **I decided:** (confirm) accepted. A failure becomes 503 `UPSTREAM_UNAVAILABLE` with `Retry-After`; a test asserts exactly one call per upstream.
 - **Why:** retries at every hop multiply (planner 3 x weather 3 = 9 provider calls) and the caller waits longer than any timeout it set.
 - **Research:** none (same reasoning as entries 91-102).
 
-### 120. Timeouts: registry 1.0 s, weather 4.5 s
+### 121. Timeouts: registry 1.0 s, weather 4.5 s
 - **AI suggested:** `REGISTRY_TIMEOUT_S` 1.0 and `WEATHER_TIMEOUT_S` 4.5, both settings. Each is applied twice: httpx per phase, and `asyncio.timeout` for the whole call.
 - **I decided:** (confirm) 1.0 s and 4.5 s.
 - **Why:** the registry answers in tens of ms (NFR-1.1), so 1 s is generous. The weather-service may spend its whole 4 s budget on retries before it sends a stale forecast: 4.5 s lets us receive that answer instead of giving up first and showing an error.
 - **Research:** weather-service budget from its README.
 
-### 121. A crop without a profile is 409 CONFLICT
+### 122. A crop without a profile is 409 CONFLICT
 - **AI suggested:** 409 `CONFLICT` with a detail naming the crop and `crop_profiles.json`, checked before the weather call.
 - **I decided:** (confirm) accepted.
 - **Why:** the request is fine and the services are up; the data is incomplete (the registry has a crop the profile file lacks). 500 would look like a bug, 503 would invite a pointless retry, 404 would say the plot is missing.
 - **Research:** none.
 
-### 122. Choices the skill does not cover (please confirm each)
+### 123. Choices the skill does not cover (please confirm each)
 - **AI suggested / I decided:** (confirm all)
   1. `today` = the first forecast date (the weather-service's local "today" at the plot); the planner has no clock for plan dates. `generated_at` is the server's UTC clock.
   2. `season_ended` is true when the first plan day is past the season length (later days may be `ended` without the flag).
@@ -762,53 +762,155 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
   12. `UNIFORMITY_FACTOR` must be 1 or more.
   13. The plot id is URL-quoted before it goes to the registry.
   14. Unhandled errors: 500 with `code` `INTERNAL_ERROR` (the weather-service uses `UNAVAILABLE` there, which would be wrong here).
-- **Why:** each was needed to write working code and the skill is silent. Entries 109-117 stay as they are.
+- **Why:** each was needed to write working code and the skill is silent. Entries 110-118 stay as they are.
 - **Research:** none.
 
-### 123. Compute with the rounded values that are shown
+### 124. Compute with the rounded values that are shown
 - **AI suggested:** found live: kc 0.81 x et0 2.76 shown, but need_mm 2.25 (the engine used the hidden Kc 0.8143); also 50.25 / 52.5 = 95.71 % shown as 95.72. Every step now starts from the rounded numbers in the response: Kc 2 decimals first, need_mm = round(kc x et0, 2), depletion, irrigation and soil water in 0.01 mm, litres from the shown irrigation_mm, minutes from the shown litres and shown system flow. A property test checks this on seven plans.
 - **I decided:** adopted (the owner's decision).
 - **Why:** a grower or the instructor can check every number by hand. The difference is hundredths of a mm. To make the percentage checkable on every day, each day also shows `soil_capacity_mm` (capacity grows with the roots, so today's value in `assumptions` is not enough). Capacity is `round(mm per m x Zr, 2)` with Zr at full precision: rounding Zr first would move case C day 1 from 18.04 to 18.03 mm.
 - **Research:** none. The skill (SKILL.md rule 9, formulas.md sections 4, 5, 6, 7) was updated.
 
-### 124. Daily run cap of 24 h and the IRRIGATION_CAPPED warning
+### 125. Daily run cap of 24 h and the IRRIGATION_CAPPED warning
 - **AI suggested:** found live: soil_moisture 0 on the mature North block (TAW 52.5 mm, 1.0 L/h emitters) gave 2079 minutes in one day, which is impossible. The engine cuts `irrigation_mm` to the largest 0.01 mm amount whose `run_minutes` (same formula) fits `MAX_RUN_MINUTES_PER_DAY` (1440, a setting). The rest stays in the depletion and the next morning's check refills it, capped again if needed. Every shown number stays checkable by hand.
 - **I decided:** the 24 h cap, the warning `IRRIGATION_CAPPED` once per plan (first capped day) with the needed mm, the system's application rate (`application_rate_mm_per_h = round(system_flow_lph / area_m2, 2)`, always in `assumptions`) and the hours a full refill needs, and a "capped at 24 h" reason on the day. The rate idea is the owner's: tell the grower the speed of his system; faster emitters shorten the time, not the amount of water.
 - **Why:** the plan must never ask for more hours than a day has, and it must not silently shrink the water: the amount is kept and spread over days. North block example: day 1 36.36 mm in 1440 min, day 2 the remaining 21.89 mm in 867 min.
 - **Research:** none. The skill (rule 8b, formulas.md sections 4-6) and the README were updated. Not covered: the hours in the warning use the shown rate and include the uniformity factor; the cap applies per day on its own, not to the sum of the plan.
 
-### 125. Frontend: soil_moisture asked first, no default
+### 126. Frontend: soil_moisture asked first, no default
 - **AI suggested:** a default of 5 when `?soil_moisture=` is missing, so the plan always loads.
 - **I decided:** rejected. The planner never guesses (no stored data, FR-2.8 spirit). Without the value the page shows only "How wet is the soil today?" (0-10, one tap, with the hand "feel" check); the plan loads after the pick and the value stays in the URL, nothing is stored. An invalid value asks again.
 - **Why:** a guessed soil value would silently change the irrigation advice.
 - **Research:** none.
 
-### 126. Frontend: season-ended gate and warnings rendered by code
+### 127. Frontend: season-ended gate and warnings rendered by code
 - **AI suggested:** show all warnings as one list under the answer.
 - **I decided:** `SEASON_ENDED` first, the plan behind "Show the plan anyway" (`<details>`, the plan is already loaded, no second request); `IRRIGATION_CAPPED` next to today's answer with the planner's message; `STALE_FORECAST` as before (age, stronger over 6 h); unknown codes: the message as-is.
 - **Why:** each warning is shown where it changes the grower's decision; a new planner code is never dropped.
 - **Research:** none.
 
-### 127. Frontend: planner timeout 6 s
+### 128. Frontend: planner timeout 6 s
 - **AI suggested:** 8 s.
 - **I decided:** 6 s from the chain budget (registry 1 s + weather 4.5 s = 5.5 s). Registry 3 s and health 2 s unchanged.
 - **Why:** long enough for the planner's worst case, no longer.
 - **Research:** none.
 
-### 128. Frontend: `cn` package flagged, removed, then accepted (corrected)
+### 129. Frontend: `cn` package flagged, removed, then accepted (corrected)
 - **AI suggested:** removed `shadcn` and its transitive `cn` package because `cn` looked unknown (supply-chain caution), and dropped the unused `shadcn/tailwind.css` import.
 - **I decided:** after checking the publisher (same maintainer as the shadcn CLI) and the official shadcn changelog (components import `cn` from the `cn` package, a drop-in for twMerge(clsx(...))), `cn` is official and accepted, with `@base-ui/react` (official shadcn Base UI support). Both are on the allow-list. `shadcn migrate cn` switched `src/lib/utils.ts` to `export { cn } from "cn"` and removed `clsx` and `tailwind-merge`.
 - **Why:** the first removal was wrong. Lesson: verify the publisher and the changelog before removing a package.
 - **Research:** `npm view` (maintainer), shadcn changelog.
 
-### 129. Frontend: NFR-2.8 verified with a real browser at 375 x 667
+### 130. Frontend: NFR-2.8 verified with a real browser at 375 x 667
 - **AI suggested:** Playwright MCP.
 - **I decided:** the MCP failed to connect, so the same check ran with playwright-core and the installed Chromium. On /, normal plot, season-ended (closed and open), capped, soil question, error: `scrollWidth` = 375 and today's answer ends inside 667 px on all. Screenshots in `services/frontend/docs/screenshots/`.
 - **Why:** the requirement is measured, not assumed.
 - **Research:** none.
 
-### 130. Frontend: real shadcn/ui components, with a dependency check
+### 131. Frontend: real shadcn/ui components, with a dependency check
 - **AI suggested:** dropped shadcn because nothing used it.
 - **I decided:** the instructor's stack requires real shadcn/ui: Card (today's answer, day rows), Alert (warnings, errors), Badge (stage, "Old forecast"), Button (soil 0-10 grid, "Update plan"), restyled to our palette; behaviour unchanged. New dependency allow-list: `cn`, `@base-ui/react`, class-variance-authority, lucide-react, tw-animate-css (+ radix if ever needed).
 - **Why:** requirement of tasks/p2.md; the allow-list check catches unknown packages the CLI may add.
 - **Research:** none. NFR-2.8 re-checked at 375 x 667 on all seven pages, screenshots refreshed.
+
+## Step 22 – frontend redesign (portfolio look)
+
+### 132. Redesign direction: dark earthy band, light paper cards
+- **AI suggested:** nothing different: the direction came from Maor in the task. The AI's own choices inside it: the answer card overlaps the lower edge of the band (one frame works for the question, the plan, the error and the loading state), and the band ends in a slow wave in the page colour instead of a straight line.
+- **I decided:** a hybrid "field instrument with a rustic touch". A dark soil band with the brand and the title on every page; data on warm paper cards; from 1024 px a two-column grid, 1200 px wide (answer, gauge and chart on the left, soil form and day list on the right); one column at 375 px. Same pages, same behaviour, no new route, feature or API call.
+- **Why:** the band gives the app an identity; the paper keeps the numbers readable in sunlight (the grower reads them in the field). Alon's P2 rule is "no other pages or features", so only the look changes.
+- **Research:** none. Measured on the built app (mock services, no database) on 11 states at 375, 820 and 1440 px: normal, no irrigation, capped, a 17 h 20 min run, old forecast, season ended (closed and open), home, soil question, two errors. No horizontal scroll, and every text node passes WCAG AA by script (4.5:1, 3:1 for large text).
+
+### 133. Gauge and week chart in inline SVG, no chart library
+- **AI suggested:** the task ruled out a chart library. The AI added: draw only from numbers the plan already returns, and hide a visual when a number it needs is missing (never zeros, as FR-2.8 does in the weather-service).
+- **I decided:** gauge = half dial of soil water at the end of today (0 to 100%) with a tick at the trigger (100 minus `irrigate_when_depleted_pct`, so 70%): leaf green above it, water blue at or below it. Chart = rain and irrigation as stacked bars, crop need as a line, ET0 as a dashed line, drawn twice from the same data (under 640 px and from 640 px) so the text keeps its size on screen. **Maor to confirm:** the task says "depletion vs the 30% trigger"; the gauge draws soil water, so it shows the same number as the answer card and the day bars, and says the depletion in words ("18% used. Watering starts at 30%.") and on the tick ("30% used").
+- **Why:** no new dependency (the allow-list is unchanged), server-rendered, nothing runs in the browser. Series differ by shape (line, dashes, hatch, solid), not only by colour. One number means one thing across the page.
+- **Research:** none. The dial and dash geometry were checked in Chromium.
+
+### 134. Fonts: Besley and IBM Plex Sans (the AI's pick, Maor to confirm)
+- **AI suggested:** Besley (a Clarendon-style serif, the lettering of almanacs and seed packets) for headings and plot names; IBM Plex Sans for text and every number. They replace Bricolage Grotesque and Atkinson Hyperlegible Next.
+- **I decided:** both through `next/font/google`: downloaded at build time and served from our own origin, so the browser makes no request to Google (checked: 0 external requests). `font-variant-numeric: tabular-nums` on the body.
+- **Why:** the task asks for a characterful serif and a clean sans with tabular numerals. Measured in Chromium: Plex Sans digits have the same width everywhere ("1111" and "0000" are both 96 px at 40 px, with or without `tabular-nums`), so numbers line up in columns. The key number is always Plex, never the serif.
+- **Research:** Next's font list shows both as variable fonts. "Besley is a Clarendon revival" is from memory, not re-checked.
+
+### 135. Colour tokens: one set, one meaning per colour
+- **AI suggested:** define every colour once in `globals.css` as a CSS variable mapped to a Tailwind theme token: paper (`--background` #e8e3cf, `--card` #fbf9f1, ink #1d1b11, muted ink #58533b), earth (`--soil` #25200f, `--straw` #d8cb98) and three meanings with an ink and a tint each: leaf green = OK, water blue = irrigation, amber = warning. The shadcn tokens (primary, muted, border, ring) are mapped on top.
+- **I decided:** exactly that; light only (the old unused `.dark` block is gone, `@custom-variant dark` stays so no `dark:` class in the shadcn files turns on). shadcn logic is untouched: the only edit in `ui/` is `button.tsx`'s base classes (press = `scale(0.97)` instead of a 1 px shift, a list of properties instead of `transition-all`).
+- **Why:** one place to change a colour, and a colour never changes meaning. Measured contrast: ink on paper 16.4:1, muted ink 7.3:1, amber ink on amber tint 7.3:1, paper on soil 14.1:1, pale text (`--soil-muted` #cfc6a6) on soil 9.5:1; edges and fills at least 3.6:1 (input border 3.6, amber fill 3.8, leaf 5.0, water 5.6).
+- **Research:** WCAG 2 AA limits (4.5:1 text, 3:1 large text and graphics) from memory.
+
+### 136. The furrow texture is generated SVG, not an image
+- **AI suggested:** three ways: a drawn static SVG, generated paths, or a CSS repeating gradient. Generated paths give contour lines that no pattern repeat can.
+- **I decided:** `furrowPaths()` in `src/lib/furrows.ts` makes smooth parallel lines bent by two sine terms and one Gaussian "hill" (a contour-map look). It is deterministic (no randomness) and computed once. Used in the band (straw lines at 20% opacity, fading to the bottom), in the answer card (water blue or leaf green, the colour of the answer) and as a leaf-green patch on each plot card (seeded by the plot id).
+- **Why:** no photo and no external file; about 10 KB of path data in the band (18 lines, 120 px steps). The lines stay thin and pale so they never fight the numbers (all text passes the contrast script).
+- **Research:** none.
+
+### 137. Motion: one gauge fill and press feedback
+- **AI suggested:** the notes in `.claude/skills/emil-design-eng`: a strong ease-out (`cubic-bezier(0.23, 1, 0.32, 1)`), `scale(0.97)` on press, transitions on named properties, hover effects only where hover exists (Tailwind 4 `hover:` already is), no animation for things seen all day.
+- **I decided:** the gauge fills once (900 ms, 150 ms after load: a one-off, not a repeated UI action). Buttons and plot cards answer a press in 150 to 200 ms; plot cards rise 2 px on hover. The old rising "water level" and the seven staggered day bars are removed. `prefers-reduced-motion` turns the fill off and cuts transitions to 0.01 ms (checked: `animation-name: none`).
+- **Why:** this is a tool read in the field: motion should show what changed (the gauge) or confirm a press, nothing else.
+- **Research:** none.
+
+### 138. Plot cards show the soil from `soil_id`, no new request
+- **AI suggested:** the cards need crop, soil and area. `/v1/plots` already returns `soil_id`, and the registry's soil names ("Sand", "Loam", "Clay loam") are the ids in sentence case, so no `/v1/soils` call is needed.
+- **I decided:** `labelFromId("clay-loam")` gives "Clay loam"; `soil_id` is added to the frontend `Plot` type (it is already in the API answer). The plan page shows the crop the same way from `plan.crop`.
+- **Why:** the rule is no new API call. Limit: a soil whose registry name is not its id in sentence case would show the id version; then fetch `/v1/soils`.
+- **Research:** `services/registry-service/seed_registry.sh` (soil and crop ids and names).
+
+## Step 23 – frontend: cinematic motion pass
+
+### 139. References and what was taken from each
+- **AI suggested:** take the feel of each reference and copy nothing: the same pages and behaviour, only the look and the motion change (Alon's P2 rule: no new page, route, API call or feature).
+- **I decided:** **SpaceX**: a dark hero with a full-bleed photo, a huge uppercase title with wide letter-spacing, one small brand pill as the only navigation, outline buttons that fill on hover, sections that reveal on scroll. **Figma Make**: oversized type, one vivid accent (ion cyan `#5ce1ff`, used on chrome only, never on data), large radii, and "product preview" cards that float on the photo: the real answer card and the soil gauge sit inside the hero at 1440 px, the 7-day chart right below it. **Dribbble**: the home page is a gallery of rounded cards with a photo on top (rotated by plot), they lift and lean toward the cursor on hover and the soil and area chips slide up over the photo; no filter chips, that would be a new feature. **motion.dev**: springs (tilt, liquid level, bars), scroll-linked motion (hero parallax) and physical press feedback.
+- **Fonts (the AI's pick, Maor to confirm):** Unbounded replaces Besley for titles and headings (decision 134 is superseded for headings; IBM Plex Sans stays for text and every number). A wide geometric sans gives the SpaceX look; a wide serif in capitals does not. The dev warning "Failed to find font override values" did not need a fix: Next's own `calculateSizeAdjustValues` finds metrics for Unbounded, Besley and IBM Plex Sans, and Maor's dev log has no such line.
+- **Why:** a dark, moving hero is the memorable moment; everything under it stays quiet so the data stays readable (paper cards for the day list and the form, dark instrument cards for the answer, gauge and chart).
+- **Research:** none. The reference sites were not opened; they are Maor's descriptions.
+
+### 140. Motion (the library) instead of CSS-only
+- **AI suggested:** CSS alone covers the intro, the hero atmosphere and the press feedback, and runs off the main thread. It cannot do springs that keep their velocity, a number counting to a real value, scroll-linked parallax or gesture-driven tilt without hand-written JavaScript.
+- **I decided (Maor's choice):** `motion` (MIT, 14.14.0), the only new dependency, imported from `motion/react`; `LazyMotion` with `domAnimation` and `strict` (only `m` components, the features load after first paint); `MotionConfig reducedMotion="user"`. Motion components are small `"use client"` leaves; pages and fetching stay on the server. Split: **CSS** for what must start at first paint (headline reveal, Ken Burns, grid drift, radar, liquid waves, press feedback); **Motion** for physics and scroll (tilt, count-up with `animate`, liquid level spring, chart `pathLength`, droplet bars, plan bars, scroll reveals, `useScroll` parallax). Only transform, opacity and `pathLength` are animated.
+- **Cost, measured** (Next 16 prints no sizes in `next build`, so from `.next`): all client JS 575 to 807 KB raw, 177 to 260 KB gzip (+83 KB gzip); first-load JS (uncompressed) `/` 476 to 661 KB and `/plots/[id]` 476 to 699 KB. Motion itself is about 200 KB raw / 73 KB gzip in three chunks (core 108/37, `domAnimation` 57/22 loaded after first paint, springs and `animate` 37/14); our new components are about 30 KB raw. Lighthouse on `/` (local, headless Chromium, simulated throttling): desktop 93 (FCP 0.3 s, LCP 0.9 s, TBT 190 ms, CLS 0), mobile 65 (FCP 1.0 s, LCP 3.5 s, TBT 1.4 s, CLS 0), accessibility 100 on both. The mobile score is script evaluation under a 4x CPU slowdown (profiled: React DOM, Next and the module loader about 1.5 s, Motion's core about 0.4 s). No old-design Lighthouse run exists to compare with.
+- **Why:** the owner wants springs and gestures; the price is one dependency and the numbers above. The first paint does not wait for it: the server HTML is the final state.
+- **Research:** Motion's API is from memory and the installed typings; motion.dev was not re-read.
+
+### 141. Home to plot: the photo morphs with View Transitions, not `layoutId`
+- **AI suggested:** Motion's `layoutId` only pairs two elements that live in one React tree. In the App Router each page is a separate tree (the old page unmounts, the new one mounts), so the pair never forms. React's `<ViewTransition>` does it with the browser's View Transitions API and is the pattern in the Next 16 guide.
+- **I decided:** **a real shared-element morph, done with `<ViewTransition>`, not Motion.** The card photo and the plot hero use the same name (`plot-photo-<id>`, `share="morph"`); the loading scene of the plot page also uses it, so the pair forms even though the plan streams in later. That scene is a client component that reads which card was clicked (a module variable set by `PlotLink`), because the static shell does not know the plot id. Checked in Chromium: on click the browser creates the `::view-transition-group/old/new(plot-photo-…)` animations. The way back (plot to home) is a plain page change, checked: the list streams in after the shell, so there is no card yet to morph into. Without browser support, or with reduced motion (0.01 ms), the page just changes.
+- **Why:** it works with App Router navigation and costs no JavaScript animation. Limit: only Chromium-class browsers run it; others get a plain page change.
+- **Research:** `node_modules/next/dist/docs/01-app/02-guides/view-transitions.md` (Next 16.4.6), read; the morph was checked with `document.getAnimations()` while navigating.
+
+### 142. Photos: licence, credits, compression, serving
+- **AI suggested:** keep the three Unsplash photos but never ship the originals (16 MB): resize and recompress with `sharp` (already in `node_modules` through Next), serve through `next/image`, and credit the photographers.
+- **I decided:** Unsplash License (free for this use, credit not required, given anyway): `public/images/CREDITS.md` and one line in the footer. `sharp` + mozjpeg, progressive, under about 500 KB each: `hero-field.jpg` 4000x2250 (2.3 MB) to 2400x1350, 439 KB (q72); `rows-aerial.jpg` 2985x4096 (5.3 MB) to 1400x1921, 462 KB (q56); `field-trees.jpg` 5216x3640 (7.8 MB) to 1800x1256, 489 KB (q52). Total 15.5 MB to 1.4 MB. The two darker photos are below the 2400 px maximum on purpose: at 2400 px they were 700 KB to 1 MB at q40. The hero has `priority`; plot cards use quality 60 (so `images.qualities` lists 60 and 75 in `next.config.ts`), blur placeholders come from the static imports. The photo for a plot is a hash of its id, so the card and the plot page always agree.
+- **Why:** the hero is the largest thing on the page; the three originals would have cost 16 MB of bandwidth. Text over a photo is only safe with an overlay: a dark gradient on every hero, checked on real pixels (decision 147).
+- **Research:** the licence terms are from memory of unsplash.com/license; not re-read.
+
+### 143. Reduced motion: off, not slower
+- **AI suggested:** one rule for the whole app: with `prefers-reduced-motion: reduce` nothing moves, the content is identical.
+- **I decided:** CSS: intro, headline reveal, Ken Burns, grid, radar and liquid waves are `animation: none`; transitions and view transitions are 0.01 ms. Motion: `MotionConfig reducedMotion="user"` plus `useReducedMotion()` where the value is set by hand (parallax stays at 0, count-up, chart, bars, gauge and scroll reveals stay in their final state, tilt and hover lift are off). The server HTML is already the final state, so a reduced-motion visitor never sees a hidden or half-drawn element. Press feedback (`scale(0.97)`) is a 0.01 ms transition, so it is effectively instant.
+- **Why:** reduced motion should mean fewer and gentler animations, never missing information. Checked with Chromium `reducedMotion: "reduce"` on five states at 375 and 1440 px: same text, same layout (screenshots `*-reduced.png`), and the contrast script passes.
+- **Research:** none.
+
+### 144. Big glass cards are dark panels without backdrop blur
+- **AI suggested:** the brief asks for glass cards. `backdrop-filter` over a photo that moves all the time (Ken Burns, radar) makes the browser blur the backdrop again every frame.
+- **I decided:** small chrome keeps real glass (`.glass`, blur 14 px: the brand pill and the photo chips on the plot cards); the big cards on the hero (`.panel`: answer, gauge, chart, soil question, error) are a 91% opaque dark surface with a top highlight and no blur. At that opacity the blur was invisible anyway.
+- **Why:** measured in headless Chromium with software rendering, on the plot page: 10 fps with blur on the big cards, 18 fps without, 41 fps without blur and without the hero animations, 61 fps with no animation at all; after the change 18 fps there. On a GPU it is faster, but the headroom is the point. The radar was also moved out of layout: it is sized in px and placed with `translate` and container units, because Lighthouse blamed its 2000 px box for a 0.76 layout shift (the viewport changed after load).
+- **Research:** none; the numbers are our own measurements.
+
+### 145. The soil gauge is a tank of liquid now (Maor to confirm)
+- **AI suggested:** "fills like liquid with a gentle wave" is hard to do on a dial arc. A tank is also the more honest picture of "percent of capacity": the level is the percentage.
+- **I decided:** a rounded tank, level = soil water left, two slow waves on the surface (CSS, one wavelength per loop so it is seamless), the level rises on a spring (a little overshoot), a dotted line at the trigger (100 minus `irrigate_when_depleted_pct`, labelled "30% used"), leaf green above the trigger and water blue at or below it, as before. The number sits in a dark window so the moving surface never runs through the digits. Same inputs, same text, same hiding rule when a number is missing.
+- **Why:** the old dial had a zone ring and a tick that were hard to read at a glance; same data, clearer picture. The surface sweeping through the digits failed the contrast script until the window was added.
+- **Research:** none.
+
+### 146. Layout: dark instrument cards, paper ledger
+- **AI suggested:** the data cards that float on the hero (answer, gauge, chart) turn dark by re-pointing the colour tokens in one class (`.on-dark`), so no component needed a second set of colours; the day list and the soil form stay on paper, because that is where the owner reads the numbers one by one.
+- **I decided:** at 1024 px and wider the answer and the gauge sit side by side on the photo (grid placement only; the DOM order is still answer, gauge, chart, form, day list, so a phone shows the same order as before); the chart, the form and the day list follow on paper. The forecast age moved into the answer card's footer, because the free line under the card landed on the dark photo. The soil question and error pages are now full-viewport scenes with a panel on the photo (they looked empty on desktop). Buttons: outline fills on hover from the left, the 0 to 10 tiles fill from the bottom; the press feedback is the existing CSS `scale(0.97)` (instead of `whileTap`; `whileTap` is on the cards).
+- **Why:** one token scope means the contrast rules stay in one place.
+- **Research:** none.
+
+### 147. Verification
+- **AI suggested:** measure instead of looking: a script hides all text, takes a full-page screenshot, and for every text box takes the pixels behind it (photo, gradient, radar, glass) and the text colour from the DOM; the worst 2% of pixels decide, against 4.5:1 (3:1 for 24 px, or 18.7 px bold). The infinite animations are frozen at four phases so the radar and the waves are covered.
+- **I decided:** 12 states (home, soil question, plan, no irrigation, capped, 17 h 20 min run, old forecast, season ended closed and open, planner error, unknown plot, home with the registry down) at 375 and 1440 px: 2537 text boxes, 0 below AA; with reduced motion on the five main states: 595 boxes, 0 below AA. No horizontal scroll at 375 or 1440 px in any of them. `npm run lint` and `npm run build` pass; `package.json` has exactly one new dependency (`motion`). Screenshots are in `docs/screenshots/` (normal, `-reduced`, `-full`, and one card hover).
+- **Why:** the first run of the script found real problems (the gauge number on the liquid, the forecast line on the photo, a hero label on a bright field); all fixed before the final run.
+- **Research:** WCAG 2 AA limits from memory.
