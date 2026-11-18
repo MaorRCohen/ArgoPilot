@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 import config
 import main
-from tests.fakes import ET0, RAIN_MM
+from tests.fakes import ET0, RAIN_MM, RH_MIN, WIND
 
 HOUR = 3600
 PROBLEM_JSON = "application/problem+json"
@@ -41,7 +41,13 @@ def test_the_response_is_the_one_in_the_spec(api):
         "fetched_at": "2026-11-17T08:00:00Z",
         "stale": False,
         "days": [
-            {"date": f"2026-11-{17 + index}", "et0_mm": ET0[index], "rain_mm": RAIN_MM[index]}
+            {
+                "date": f"2026-11-{17 + index}",
+                "et0_mm": ET0[index],
+                "rain_mm": RAIN_MM[index],
+                "wind_10m_ms": WIND[index],
+                "rh_min_pct": RH_MIN[index],
+            }
             for index in range(7)
         ],
     }

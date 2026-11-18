@@ -29,9 +29,18 @@ for _name in ("httpx", "httpcore"):
 RETRYABLE_STATUSES = {408, 429, 500, 502, 503, 504}
 RETRY_AFTER_STATUSES = {429, 503}
 
-# ET0 (FAO-56 Penman-Monteith) and the liquid water that reaches the soil: rain plus showers, no snow.
-DAILY_VARIABLES = ("et0_fao_evapotranspiration", "rain_sum", "showers_sum")
-ET0, RAIN, SHOWERS = DAILY_VARIABLES
+# ET0 (FAO-56 Penman-Monteith), the liquid water that reaches the soil (rain plus showers, no snow),
+# and the mean wind at 10 m and the minimum relative humidity at 2 m that the planner needs for
+# the FAO-56 climate adjustment of Kc. This service only fetches and checks them.
+ET0, RAIN, SHOWERS, WIND, RH_MIN = (
+    "et0_fao_evapotranspiration",
+    "rain_sum",
+    "showers_sum",
+    "wind_speed_10m_mean",
+    "relative_humidity_2m_min",
+)
+DAILY_VARIABLES = (ET0, RAIN, SHOWERS, WIND, RH_MIN)
+UNITS = {ET0: "mm", RAIN: "mm", SHOWERS: "mm", WIND: "m/s", RH_MIN: "%"}
 MAX_UTC_OFFSET_S = 24 * 3600
 
 
@@ -131,6 +140,7 @@ class OpenMeteoClient:
             "daily": ",".join(DAILY_VARIABLES),
             "timezone": "auto",  # local days, anywhere in the world
             "precipitation_unit": "mm",
+            "wind_speed_unit": "ms",
             "forecast_days": self._settings.forecast_fetch_days,
         }
         api_key = self._settings.open_meteo_api_key.get_secret_value()
@@ -167,8 +177,8 @@ def parse_forecast(payload: object, expected_days: int) -> tuple[tuple[ForecastD
     if isinstance(utc_offset_s, bool) or not isinstance(utc_offset_s, int) or abs(utc_offset_s) > MAX_UTC_OFFSET_S:
         raise ProviderError("utc_offset_seconds is missing or not a UTC offset")
     for name in DAILY_VARIABLES:
-        if units.get(name) != "mm":
-            raise ProviderError(f"daily_units.{name} is missing or not mm")
+        if units.get(name) != UNITS[name]:
+            raise ProviderError(f"daily_units.{name} is missing or not {UNITS[name]}")
 
     lists = {name: _list(daily.get(name), f"daily.{name}") for name in ("time", *DAILY_VARIABLES)}
     if any(len(values) != expected_days for values in lists.values()):
@@ -180,10 +190,18 @@ def parse_forecast(payload: object, expected_days: int) -> tuple[tuple[ForecastD
     et0 = [_amount(value, f"daily.{ET0}") for value in lists[ET0]]
     rain = [_amount(value, f"daily.{RAIN}") for value in lists[RAIN]]
     showers = [_amount(value, f"daily.{SHOWERS}") for value in lists[SHOWERS]]
+    wind = [_amount(value, f"daily.{WIND}") for value in lists[WIND]]
+    rh_min = [_amount(value, f"daily.{RH_MIN}", maximum=100) for value in lists[RH_MIN]]
     days = tuple(
         # Open-Meteo gives at most 2 decimals: the rounding only removes float noise (0.2 + 0.1).
-        ForecastDay(date=day, et0_mm=et0_mm, rain_mm=round(rain_mm + showers_mm, 2))
-        for day, et0_mm, rain_mm, showers_mm in zip(dates, et0, rain, showers)
+        ForecastDay(
+            date=day,
+            et0_mm=et0_mm,
+            rain_mm=round(rain_mm + showers_mm, 2),
+            wind_10m_ms=round(wind_ms, 2),
+            rh_min_pct=round(rh_pct, 2),
+        )
+        for day, et0_mm, rain_mm, showers_mm, wind_ms, rh_pct in zip(dates, et0, rain, showers, wind, rh_min)
     )
     return days, utc_offset_s
 
@@ -209,7 +227,7 @@ def _date(value: object) -> date:
         raise ProviderError("daily.time has a value that is not a date") from None
 
 
-def _amount(value: object, where: str) -> float:
+def _amount(value: object, where: str, maximum: float | None = None) -> float:
     # True is an int in Python and would become 1 mm of water.
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ProviderError(f"{where} has a value that is not a number (null included)")
@@ -219,4 +237,6 @@ def _amount(value: object, where: str) -> float:
         raise ProviderError(f"{where} has a value that is too large") from None
     if not math.isfinite(amount) or amount < 0:
         raise ProviderError(f"{where} has a negative or not finite value")
+    if maximum is not None and amount > maximum:
+        raise ProviderError(f"{where} has a value above {maximum}")
     return amount

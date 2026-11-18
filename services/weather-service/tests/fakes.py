@@ -36,6 +36,8 @@ def make_settings(**overrides) -> Settings:
 ET0 = [3.1, 2.8, 3.4, 3.0, 2.9, 3.3, 3.5, 3.2]
 RAIN_SUM = [0.0, 4.0, 0.0, 0.2, 0.0, 0.0, 1.0, 0.0]
 SHOWERS_SUM = [0.0, 0.2, 0.0, 0.1, 0.0, 0.0, 0.5, 0.0]
+WIND = [2.1, 3.4, 4.0, 2.8, 1.9, 3.0, 5.2, 2.5]  # mean wind at 10 m, m/s
+RH_MIN = [35.0, 28.5, 22.0, 40.0, 55.5, 60.0, 30.0, 25.5]  # minimum relative humidity at 2 m, %
 RAIN_MM = [0.0, 4.2, 0.0, 0.3, 0.0, 0.0, 1.5, 0.0]  # what the service must answer: rain_sum + showers_sum
 
 
@@ -66,12 +68,16 @@ def open_meteo_body(utc_offset_s: int = 7200, first_day: date | None = None, day
             "et0_fao_evapotranspiration": "mm",
             "rain_sum": "mm",
             "showers_sum": "mm",
+            "wind_speed_10m_mean": "m/s",
+            "relative_humidity_2m_min": "%",
         },
         "daily": {
             "time": [(first_day + timedelta(days=i)).isoformat() for i in range(days)],
             "et0_fao_evapotranspiration": [ET0[i % 8] for i in range(days)],
             "rain_sum": [RAIN_SUM[i % 8] for i in range(days)],
             "showers_sum": [SHOWERS_SUM[i % 8] for i in range(days)],
+            "wind_speed_10m_mean": [WIND[i % 8] for i in range(days)],
+            "relative_humidity_2m_min": [RH_MIN[i % 8] for i in range(days)],
         },
     }
 

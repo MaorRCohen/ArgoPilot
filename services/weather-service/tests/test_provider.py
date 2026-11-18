@@ -8,9 +8,15 @@ import httpx
 import pytest
 
 from provider import ProviderError
-from tests.fakes import BASE_URL, ET0, NOW, RAIN_MM, fetch, open_meteo_body
+from tests.fakes import BASE_URL, ET0, NOW, RAIN_MM, RH_MIN, WIND, fetch, open_meteo_body
 
-VARIABLES = ("et0_fao_evapotranspiration", "rain_sum", "showers_sum")
+VARIABLES = (
+    "et0_fao_evapotranspiration",
+    "rain_sum",
+    "showers_sum",
+    "wind_speed_10m_mean",
+    "relative_humidity_2m_min",
+)
 SECRET_KEY = "k3y-s3cret"  # a constant, so no traceback source line shows the value
 
 
@@ -33,6 +39,8 @@ def test_a_good_response_becomes_eight_days_with_rain_and_showers_added():
     assert [day.date for day in forecast.days][:2] == [date(2026, 11, 17), date(2026, 11, 18)]
     assert [day.et0_mm for day in forecast.days] == ET0
     assert [day.rain_mm for day in forecast.days] == RAIN_MM  # 0.2 + 0.1 is 0.3, not 0.30000000000000004
+    assert [day.wind_10m_ms for day in forecast.days] == WIND
+    assert [day.rh_min_pct for day in forecast.days] == RH_MIN
     assert len(forecast.days) == 8
     assert forecast.utc_offset_s == 7200
     assert forecast.fetched_at == NOW
@@ -49,6 +57,23 @@ def test_et0_is_passed_through_as_the_provider_gave_it():
     body = open_meteo_body()
     body["daily"]["et0_fao_evapotranspiration"][0] = 3.14
     assert no_retries(answers(body)).days[0].et0_mm == 3.14
+
+
+def test_wind_and_humidity_are_rounded_to_2_decimals():
+    body = open_meteo_body()
+    body["daily"]["wind_speed_10m_mean"][0] = 3.456
+    body["daily"]["relative_humidity_2m_min"][0] = 41.234
+    day = no_retries(answers(body)).days[0]
+    assert (day.wind_10m_ms, day.rh_min_pct) == (3.46, 41.23)
+
+
+def test_the_limits_of_wind_and_humidity_are_valid():
+    body = open_meteo_body()
+    body["daily"]["wind_speed_10m_mean"][0] = 0
+    body["daily"]["relative_humidity_2m_min"][0] = 0
+    body["daily"]["relative_humidity_2m_min"][1] = 100
+    days = no_retries(answers(body)).days
+    assert (days[0].wind_10m_ms, days[0].rh_min_pct, days[1].rh_min_pct) == (0.0, 0.0, 100.0)
 
 
 def test_a_zero_is_a_real_value():
@@ -75,7 +100,8 @@ def test_the_request_asks_for_the_decided_parameters_and_sends_no_key_when_it_is
     assert dict(seen[0].url.params) == {
         "latitude": "31.25",
         "longitude": "34.75",
-        "daily": "et0_fao_evapotranspiration,rain_sum,showers_sum",
+        "daily": "et0_fao_evapotranspiration,rain_sum,showers_sum,wind_speed_10m_mean,relative_humidity_2m_min",
+        "wind_speed_unit": "ms",
         "timezone": "auto",
         "precipitation_unit": "mm",
         "forecast_days": "8",
@@ -142,6 +168,13 @@ def _walk(body, path):
 
 
 BAD_BODIES = {
+    "humidity above 100": put(100.1, "daily", "relative_humidity_2m_min", 3),
+    "humidity far above 100": put(1000, "daily", "relative_humidity_2m_min", 3),
+    "wind in km/h": put("km/h", "daily_units", "wind_speed_10m_mean"),
+    "wind in m/s written ms": put("ms", "daily_units", "wind_speed_10m_mean"),
+    "humidity as a fraction": put("fraction", "daily_units", "relative_humidity_2m_min"),
+    "humidity in mm": put("mm", "daily_units", "relative_humidity_2m_min"),
+    "rain unit is m/s": put("m/s", "daily_units", "rain_sum"),
     "no daily": delete("daily"),
     "no daily_units": delete("daily_units"),
     "no time": delete("daily", "time"),

@@ -30,12 +30,12 @@ Swagger UI: http://127.0.0.1:8001/docs
   "lat": 31.25,
   "lon": 34.79,
   "source": "open-meteo",
-  "fetched_at": "2026-11-17T22:04:57Z",
+  "fetched_at": "2026-11-18T09:49:59Z",
   "stale": false,
   "days": [
-    { "date": "2026-11-18", "et0_mm": 2.73, "rain_mm": 0.0 },
-    { "date": "2026-11-19", "et0_mm": 2.97, "rain_mm": 0.0 },
-    { "date": "2026-11-20", "et0_mm": 3.15, "rain_mm": 0.0 }
+    { "date": "2026-11-18", "et0_mm": 2.76, "rain_mm": 0.0, "wind_10m_ms": 1.85, "rh_min_pct": 41.0 },
+    { "date": "2026-11-19", "et0_mm": 3.07, "rain_mm": 0.0, "wind_10m_ms": 1.97, "rh_min_pct": 30.0 },
+    { "date": "2026-11-20", "et0_mm": 3.17, "rain_mm": 0.0, "wind_10m_ms": 1.75, "rh_min_pct": 28.0 }
   ]
 }
 ```
@@ -45,6 +45,7 @@ Swagger UI: http://127.0.0.1:8001/docs
 - `stale`: `true` only when the provider failed and this is the last forecast the service had for the cell.
 - `days[].date`: the local date at the point. The first one is today there, so a forecast fetched late in the evening in UTC can start on the next date (as above).
 - `et0_mm`, `rain_mm`: millimetres of water per day.
+- `wind_10m_ms`: mean wind speed at 10 m above ground, in m/s (not at 2 m: the planner converts it). `rh_min_pct`: the day's minimum relative humidity at 2 m, in % (0 to 100). Both are rounded to 2 decimals.
 
 ## How a request is answered
 
@@ -69,11 +70,16 @@ The earth is cut into 0.1° grid cells. Points in one cell share one forecast. T
 | `et0_fao_evapotranspiration` | mm per day | `et0_mm`. The reference evapotranspiration of a well-watered grass field (FAO-56 Penman-Monteith): how much water a standard patch of grass loses to sun and wind that day. |
 | `rain_sum` + `showers_sum` | mm per day | `rain_mm`. `rain_sum` is rain from large-scale weather systems, `showers_sum` is convective rain (showers). Together: the liquid water that reaches the soil. |
 
+| `wind_speed_10m_mean` | m/s | `wind_10m_ms`. Mean wind speed at 10 m. Requested with `wind_speed_unit=ms`. |
+| `relative_humidity_2m_min` | % | `rh_min_pct`. Minimum relative humidity at 2 m of the day. |
+
+**Why wind and humidity:** the planner applies the FAO-56 climate adjustment of Kc (Eq. 62 and 65), which needs the wind at 2 m (`u2`) and the minimum humidity (`RHmin`). In hot, dry, windy places Kc mid can be about 10% higher. This service stays crop-agnostic: it only fetches, checks and returns the two numbers. The conversion from 10 m to 2 m (FAO-56 Eq. 47) is done in the planner, not here.
+
 Why not `precipitation_sum`: it includes snowfall. In a system for the whole world, snow does not reach the soil that day. Why not `rain_sum` alone: it leaves out showers, which matter in warm climates. They are separate numbers: in the real answer used for the example above, one day has `showers_sum` 0.15 mm and `rain_sum` 0.0 mm. The sum is rounded to 2 decimals, only to remove float noise such as `0.2 + 0.1` (the provider's values have 1 or 2 decimals).
 
-The service always sends `daily=et0_fao_evapotranspiration,rain_sum,showers_sum`, `timezone=auto` (days are local days at the point, anywhere in the world), `precipitation_unit=mm` and `forecast_days=8`, plus `apikey` when `OPEN_METEO_API_KEY` is not empty. Open-Meteo's names and units appear in `provider.py` only.
+The service always sends `daily=et0_fao_evapotranspiration,rain_sum,showers_sum,wind_speed_10m_mean,relative_humidity_2m_min`, `wind_speed_unit=ms`, `timezone=auto` (days are local days at the point, anywhere in the world), `precipitation_unit=mm` and `forecast_days=8`, plus `apikey` when `OPEN_METEO_API_KEY` is not empty. Open-Meteo's names and units appear in `provider.py` only.
 
-**Nothing is guessed (FR-2.8).** Each of these is a provider failure, never a default, never a zero: a timeout, an error status, a body that is not JSON, a missing field, any `null`, a value that is not a number or is negative, a unit that is not `mm`, lists that differ in length or are not 8 days, dates that are not consecutive days. If a point gets `null` values from the provider, that point gets stale data or a 503.
+**Nothing is guessed (FR-2.8).** Each of these is a provider failure, never a default, never a zero: a timeout, an error status, a body that is not JSON, a missing field, any `null`, a value that is not a number or is negative, a humidity above 100, a unit that is not the expected one (`mm`, `m/s`, `%`), lists that differ in length or are not 8 days, dates that are not consecutive days. If a point gets `null` values from the provider, that point gets stale data or a 503.
 
 ## Retries and time
 
