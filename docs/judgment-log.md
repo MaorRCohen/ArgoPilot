@@ -649,3 +649,11 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 
 ### 107. NFR-2.3 measured on the fresh path
 - **Result (2026-11-18, local WSL, freshly started service):** `fresh_forecast` at 10 req/s for 2 min: 1201 requests, 0 failed, 0 dropped, all checks 100%. p95 6.42 ms against the 100 ms target (avg 4.5, max 11.55). The warmup's 411 ms max is the only real Open-Meteo traffic and is not part of NFR-2.3.
+
+## Step 20 – planner-service irrigation formulas
+
+### 108. FAO-56 is the single source for the irrigation formulas
+- **AI suggested:** read the actual FAO-56 chapters (5, 6, 8 and Annex 8) and cite a chapter, table or equation number for every claim, and list what FAO-56 does not say.
+- **I decided:** FAO-56 (Allen et al. 1998) is the only source for ETc = Kc ET0, Ks, TAW, RAW, p, the depletion balance and the climate adjustment of Kc. This is the instructor's requirement. Where FAO-56 is silent, the planner author decides and logs it.
+- **Why:** one source keeps the formulas checkable against the paper, and the instructor will check them there.
+- **Research:** `services/planner-service/docs/research/fao56.md`. Gaps FAO-56 leaves open: effective rainfall (it only has P - RO and a "skip rain under 0.2 ET0" rule), drip irrigation for TAW and Ks (the wetted fraction fw only appears in Kc ini and in Ke), irrigation efficiency, and what to do outside the u2 and RHmin limits of Eq. 62 and 65. Annex 8 is a dual-Kc example (Kcb + Ke), so a single-Kc planner is a simplification.
