@@ -3,7 +3,6 @@ import { Suspense, ViewTransition } from "react";
 import { Droplets, Layers, Ruler, Sprout } from "lucide-react";
 import { PlotLink } from "@/components/motion/plot-link";
 import { Reveal } from "@/components/motion/reveal";
-import { CountUp } from "@/components/motion/count-up";
 import { Tilt } from "@/components/motion/tilt";
 import { PageFrame } from "@/components/page-frame";
 import { Problem } from "@/components/problem";
@@ -68,7 +67,7 @@ function PlotCard({ plot, crop }: { plot: Plot; crop: string }) {
                 sizes="(min-width: 1024px) 380px, (min-width: 640px) 46vw, 92vw"
                 quality={60}
                 placeholder="blur"
-                className="object-cover transition-transform duration-700 ease-out group-hover:scale-110"
+                className="object-cover transition-transform duration-500 ease-out group-hover:scale-110"
                 style={{ objectPosition: photo.position }}
               />
             </div>
@@ -142,8 +141,8 @@ async function Farms() {
                 {farm.name}
               </h2>
               <p className="shrink-0 text-muted-foreground">
-                <CountUp value={farmPlots.length} delay={0.1} duration={0.8} />{" "}
-                {farmPlots.length === 1 ? "plot" : "plots"}
+                {/* A count of 1 to 5 does not need to count up: it is read at a glance, so it is plain text. */}
+                {farmPlots.length} {farmPlots.length === 1 ? "plot" : "plots"}
               </p>
             </Reveal>
             {farmPlots.length === 0 ? (
@@ -154,7 +153,7 @@ async function Farms() {
               <ul className="mt-6 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
                 {farmPlots.map((plot, i) => (
                   <li key={plot.id}>
-                    <Reveal delay={(i % 3) * 0.09}>
+                    <Reveal delay={(i % 3) * 0.07}>
                       <PlotCard plot={plot} crop={cropName.get(plot.crop_id) ?? plot.crop_id} />
                     </Reveal>
                   </li>

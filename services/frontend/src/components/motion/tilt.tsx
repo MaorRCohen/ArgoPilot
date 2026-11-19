@@ -67,7 +67,7 @@ export function Tilt({
       className={`relative ${className ?? ""}`}
       style={{ rotateX, rotateY, transformPerspective: 1100 }}
       whileHover={enabled ? { y: -lift } : undefined}
-      whileTap={{ scale: 0.985 }}
+      whileTap={{ scale: 0.98 }}
       transition={{ type: "spring", stiffness: 380, damping: 26 }}
       onPointerMove={onPointerMove}
       onPointerLeave={onPointerLeave}

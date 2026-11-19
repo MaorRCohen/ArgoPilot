@@ -13,8 +13,8 @@ const fractionDigits = (n: number): number => Math.min(3, (String(n).split(".")[
 export function CountUp({
   value,
   group = false,
-  delay = 0.35,
-  duration = 1.3,
+  delay = 0.25,
+  duration = 1,
   as: Tag = "span",
 }: {
   value: number;
@@ -35,12 +35,13 @@ export function CountUp({
   useEffect(() => {
     const el = ref.current;
     if (!el || reduce) return;
-    const frame = (n: number) =>
-      new Intl.NumberFormat("en-US", {
-        useGrouping: group,
-        minimumFractionDigits: digits,
-        maximumFractionDigits: digits,
-      }).format(n);
+    // One formatter per run: building one on every animation frame was the biggest app-level cost in the load profile.
+    const format = new Intl.NumberFormat("en-US", {
+      useGrouping: group,
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    });
+    const frame = (n: number) => format.format(n);
     if (state === "hidden") {
       el.textContent = frame(0);
       played.current = false;

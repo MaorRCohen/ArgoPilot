@@ -84,7 +84,7 @@ export function Recommendation({ plan }: { plan: PlanView }) {
                     {parts.map((p, i) => (
                       <span key={p.unit} className="whitespace-nowrap">
                         {i > 0 ? " " : null}
-                        <CountUp value={Number(p.value)} duration={1.4} />
+                        <CountUp value={Number(p.value)} />
                         <span className="ml-[0.1em] text-[0.28em] font-semibold tracking-normal"> {p.unit}</span>
                       </span>
                     ))}
@@ -100,7 +100,7 @@ export function Recommendation({ plan }: { plan: PlanView }) {
                 {irrigate ? (
                   <>
                     <span className="font-bold">
-                      <CountUp value={today.litres} group delay={0.5} /> L
+                      <CountUp value={today.litres} group delay={0.4} /> L
                     </span>{" "}
                     through the drip lines
                   </>
@@ -115,7 +115,7 @@ export function Recommendation({ plan }: { plan: PlanView }) {
                 <p>
                   Soil water at the end of today:{" "}
                   <span className="font-bold">
-                    <CountUp value={pct} delay={0.6} />%
+                    <CountUp value={pct} delay={0.45} />%
                   </span>
                   {today.stale ? <span className="font-bold text-warn-ink"> (old forecast)</span> : null}
                 </p>

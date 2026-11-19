@@ -27,7 +27,7 @@ export function Reveal({
       animate={
         hidden
           ? { opacity: 0, y, transition: { duration: 0 } }
-          : { opacity: 1, y: 0, transition: { duration: 0.8, delay, ease: EASE_OUT } }
+          : { opacity: 1, y: 0, transition: { duration: 0.6, delay, ease: EASE_OUT } }
       }
     >
       {children}

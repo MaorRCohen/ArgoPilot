@@ -70,7 +70,7 @@ export function SoilTank({ water, trigger, label }: { water: number; trigger: nu
             animate={
               hidden
                 ? { y: TH + 24, transition: { duration: 0 } }
-                : { y: 0, transition: { type: "spring", stiffness: 55, damping: 9, mass: 1, delay: 0.55 } }
+                : { y: 0, transition: { type: "spring", duration: 1.2, bounce: 0.2, delay: 0.4 } }
             }
           >
             <g className={`wave-slow ${tone === "water" ? "fill-water" : "fill-leaf"}`} opacity="0.16">
@@ -126,7 +126,7 @@ export function SoilTank({ water, trigger, label }: { water: number; trigger: nu
         letterSpacing="-2"
         className="fill-foreground"
       >
-        <CountUp as="tspan" value={Math.round(water)} duration={1.5} delay={0.5} />%
+        <CountUp as="tspan" value={Math.round(water)} duration={1.1} delay={0.4} />%
       </text>
       <text x={TX + TW / 2} y={TY + TH - 12} textAnchor="middle" fontSize="15" className="fill-foreground">
         soil water left

@@ -109,7 +109,7 @@ export function Drop({ children, i }: { children: ReactNode; i: number }) {
       animate={
         hidden
           ? { y: -90, opacity: 0, transition: { duration: 0 } }
-          : { y: 0, opacity: 1, transition: { type: "spring", stiffness: 240, damping: 13, delay: 0.45 + i * 0.09 } }
+          : { y: 0, opacity: 1, transition: { type: "spring", duration: 0.6, bounce: 0.2, delay: 0.4 + i * 0.07 } }
       }
     >
       {children}
