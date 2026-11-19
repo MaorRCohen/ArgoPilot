@@ -114,8 +114,9 @@ Measured with k6 `constant-arrival-rate` at 10 rps per endpoint (40 rps total), 
 | SQLite, P1 (2026-11-03) | 25.1 | 25.0 | 25.9 | 27.3 |
 | SQLite (2026-11-10) | 28.2 | 29.1 | 29.0 | 30.6 |
 | PostgreSQL, Docker (2026-11-10) | 35.9 | 36.8 | 36.6 | 37.4 |
-| PostgreSQL, `registry` / `registry_app` (2026-11-17) | 58.5 | 58.6 | 58.2 | 54.9 |
+| SQLite, P1 code, same session, median of 3 (2026-11-19) | 23.2 | 23.5 | 23.8 | 24.3 |
+| PostgreSQL, `registry_test`, same session, median of 3 (2026-11-19) | 31.4 | 32.2 | 32.2 | 32.6 |
 
-The 2026-11-10 runs were back-to-back on one host; the code before the `DATABASE_URL` change measured 32.2 / 32.9 / 33.1 / 35.6 ms. The 2026-11-17 PostgreSQL run came on another day, so its gap to SQLite includes host drift (see the judgment log). Host noise matters: on a busy machine the same code measured 2x slower (see `perf/results.txt`). The script uses fixed seed ids, so rerun it against a freshly seeded database, with the server running without `--reload`: `k6 run --quiet perf/registry_load.js`. For SQLite use a temp copy: `bash seed_registry.sh /tmp/perf-registry.db`, then start the server with `DATABASE_URL=sqlite:////tmp/perf-registry.db`. For PostgreSQL use the `registry_perf` database above.
+The 2026-11-10 runs were back-to-back on one host; the code before the `DATABASE_URL` change measured 32.2 / 32.9 / 33.1 / 35.6 ms. The 2026-11-19 rows alternate SQLite and PostgreSQL, 3 runs each, on one host (method and every run: [perf/results.txt](perf/results.txt)): PostgreSQL is about 8 ms slower, far under 100 ms. An earlier PostgreSQL run of 58 ms (2026-11-17) did not reproduce. Host noise matters: on a busy machine the same code measured 2x slower (see `perf/results.txt`). The script uses fixed seed ids, so rerun it against a freshly seeded database, with the server running without `--reload`: `k6 run --quiet perf/registry_load.js`. For SQLite use a temp copy: `bash seed_registry.sh /tmp/perf-registry.db`, then start the server with `DATABASE_URL=sqlite:////tmp/perf-registry.db`. For PostgreSQL use the `registry_perf` database above.
 
 Design decisions and their reasons: [../../docs/judgment-log.md](../../docs/judgment-log.md)

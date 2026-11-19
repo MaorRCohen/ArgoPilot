@@ -348,3 +348,45 @@ p95 per endpoint:
 
 Overall http_req_duration: avg 39.46 ms, med 39.17 ms, p95 58 ms, p99 68.9 ms, max 142.5 ms.
 SQLite P1 (2026-11-03, above): p95 about 25 ms.
+
+
+
+## Same-session alternating comparison, SQLite (P1 code) vs PostgreSQL (current p2 code), 2026-11-19
+
+Method (same host, same session, back-to-back, order SQLite, PostgreSQL, SQLite, PostgreSQL, SQLite, PostgreSQL; runs started 06:25 to 06:37 local, 5 s pause between):
+- SQLite side: commit 1c24610 (last commit of branch p1, stdlib sqlite3) in a git worktree, port 8010. DB seeded by that commit's seed_registry.sh in a temp dir, then copied into the (new) worktree. Removed after the runs.
+- PostgreSQL side: current p2 code (SQLAlchemy Core, psycopg, default pool, pool_pre_ping), port 8011, database registry_test only (TEST_DATABASE_URL). Guards run first (tests/pg_guard.py: name ends with _test, differs from DATABASE_URL, local host, no PG* overrides). The public schema was wiped and reseeded with setup_db.run_setup, the same as the test fixture. The real registry database was never connected. The URL was loaded in-process and never printed.
+- Same data: 2 farms, 4 plots (plus 2 crops, 3 soils, 4 emitters). Before measuring, the four GET endpoints returned identical JSON on both servers.
+- k6: perf/registry_load.js (identical on p1 and p2), k6 v2.3.0, 10 rps per endpoint (40 rps total). Each run = 10 s warm-up (own scenario, not counted) + 2 min measured, 4903 to 4904 requests. Figures are the per-scenario metrics (scenario:<name>), warm-up excluded.
+- Both servers without --reload, default uvicorn logging, same fastapi 0.162.0 / uvicorn 0.54.0 / starlette 1.10.0 / pydantic 2.14.2; both stayed up for the whole session (the one not under test was idle).
+- Machine: 12 cores, WSL2. Up and idle during the runs: Maor's frontend on :3000 and services on 8000 to 8002, PostgreSQL on 127.0.0.1:5432. Nothing else started by hand. Before each run: load average (1 min) 0.31 to 1.06, CPU idle 91 to 100 % (91 % only right before run 1); after each run: idle 98 to 100 %. uvicorn process CPU time per run: SQLite 33 to 35 s, PostgreSQL 45 to 47 s (the Postgres server process itself is not included).
+- All 6 runs: 0 failed, 0 dropped iterations, every threshold passed (p95 <= 100 ms).
+
+Per run, ms: p50 / p95 / max
+
+endpoint         run            SQLite                    PostgreSQL        
+GET farms list     1      17.7 /  25.8 /  52.6        24.9 /  33.1 /  49.0  
+GET farms list     2      17.1 /  23.5 /  30.4        24.6 /  32.2 /  47.8  
+GET farms list     3      17.5 /  23.3 /  34.9        24.8 /  32.0 /  45.2  
+
+GET farm by id     1      17.6 /  24.5 /  49.2        23.3 /  31.4 /  62.2  
+GET farm by id     2      17.1 /  23.2 /  32.0        24.5 /  32.8 /  42.7  
+GET farm by id     3      17.1 /  23.1 /  46.0        23.5 /  30.9 /  38.8  
+
+GET plots list     1      18.9 /  27.6 /  61.6        24.8 /  33.4 /  56.8  
+GET plots list     2      18.1 /  24.3 /  32.5        24.9 /  32.6 /  46.8  
+GET plots list     3      18.6 /  24.2 /  31.8        24.6 /  31.9 /  45.5  
+
+GET plot by id     1      17.8 /  25.4 /  60.5        24.6 /  33.5 /  60.6  
+GET plot by id     2      17.3 /  23.1 /  34.8        24.9 /  32.0 /  49.4  
+GET plot by id     3      17.5 /  23.8 /  32.9        24.2 /  32.2 /  41.6  
+
+Median of the 3 runs, ms (p95 is the NFR-1.1 figure):
+
+endpoint         SQLite p95   PG p95    diff   ratio   SQLite p50  PG p50    diff
+GET farms list         23.5     32.2    +8.7   1.37x         17.5    24.8    +7.4
+GET farm by id         23.2     31.4    +8.1   1.35x         17.1    23.5    +6.4
+GET plots list         24.3     32.6    +8.3   1.34x         18.6    24.8    +6.2
+GET plot by id         23.8     32.2    +8.4   1.35x         17.5    24.6    +7.1
+
+Reading: PostgreSQL is slower by about 8 ms at p95 (+35 %) and about 7 ms at p50, in every run and on every endpoint; the two sides never overlap (SQLite p95 23.1 to 27.6, PostgreSQL 30.9 to 33.5). Both are far under the 100 ms target. The 58 ms of 2026-11-17 (database registry, role registry_app, another day) was not reproduced; that setup was not measured here. Not isolated: why PostgreSQL costs 8 ms more (candidates: loopback TCP round trips, psycopg, pool_pre_ping's SELECT 1; judgment log entry 62 found no effect from the pre-ping). This compares P1 code on SQLite with current code on PostgreSQL, as asked; on 2026-11-10 the old code measured 32.2 ms p95 on SQLite and the new code 28.2 ms, so the SQLAlchemy layer is not what makes the gap.
