@@ -13,7 +13,7 @@ THREADS = 20
 
 
 @pytest.fixture
-def long_lived_client(db_path):
+def long_lived_client(backend):
     # The with-block keeps one event loop and threadpool alive for every request, like uvicorn.
     with TestClient(app) as client:
         yield client

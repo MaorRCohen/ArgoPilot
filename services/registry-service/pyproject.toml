@@ -5,6 +5,9 @@ description = "AgroPilot registry service."
 requires-python = ">=3.12"
 dependencies = [
     "fastapi~=0.115",
+    "psycopg[binary]>=3.2",
+    "pydantic-settings>=2.16.3",
+    "sqlalchemy>=2.0",
     "timezonefinder>=9.2.0",
     "uvicorn~=0.32",
 ]
@@ -22,3 +25,4 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = ["sqlite_only: needs the SQLite backend (file-based behaviour)"]

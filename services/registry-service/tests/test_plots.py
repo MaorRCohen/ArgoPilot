@@ -208,3 +208,35 @@ def test_planting_date_rejected_where_it_is_still_today(client, plot_payload, as
 
     assert_problem(response, 422, "VALIDATION")
     assert response.json()["detail"] == "planting_date is in the future"
+
+
+# Postgres-proof tests (run on SQLite and Postgres).
+def test_patch_plot_without_planting_date_returns_200(client):
+    # The stored date is read back as a date object on Postgres; it must still be re-checked and returned as text.
+    response = client.patch(f"/v1/plots/{NORTH_BLOCK_ID}", json={"name": "Renamed block"})
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Renamed block"
+    assert isinstance(response.json()["planting_date"], str)
+
+
+def test_plot_with_unknown_crop_soil_emitter_farm_is_422(client, plot_payload, assert_problem):
+    for field in ("crop_id", "soil_id", "emitter_id", "farm_id"):
+        response = create_plot(client, plot_payload(**{field: "no-such-id"}))
+        assert_problem(response, 422, "VALIDATION")
+
+
+def test_duplicate_plot_name_is_409(client, plot_payload, assert_problem):
+    assert create_plot(client, plot_payload(name="Twin")).status_code == 201
+
+    assert_problem(create_plot(client, plot_payload(name="Twin")), 409, "CONFLICT")
+
+
+def test_plot_response_has_iso_date_and_float_lat_lon(client):
+    plot = client.get(f"/v1/plots/{NORTH_BLOCK_ID}").json()
+
+    assert isinstance(plot["planting_date"], str)
+    assert len(plot["planting_date"]) == 10 and plot["planting_date"][4] == "-"
+    for field in ("lat", "lon", "area_m2", "row_spacing_m", "emitter_spacing_m"):
+        assert isinstance(plot[field], (int, float)), field
+    assert isinstance(plot["lat"], float) and isinstance(plot["lon"], float)

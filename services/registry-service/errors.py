@@ -1,15 +1,17 @@
-import sqlite3
+import logging
 from http import HTTPStatus
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError, TimeoutError as PoolTimeoutError
 from starlette.exceptions import HTTPException
 
+from db import is_temporarily_unavailable
+
+logger = logging.getLogger(__name__)
 PROBLEM_JSON = "application/problem+json"
 RETRY_AFTER_SECONDS = 30
-# Can't open, or locked. Prefix match also covers extended codes (SQLITE_BUSY_TIMEOUT, ...).
-RETRYABLE_SQLITE_ERRORS = ("SQLITE_CANTOPEN", "SQLITE_BUSY", "SQLITE_LOCKED")
 
 HTTP_CODES = {404: "NOT_FOUND", 405: "VALIDATION", 409: "CONFLICT", 503: "UNAVAILABLE"}
 
@@ -45,12 +47,14 @@ def register_error_handlers(app: FastAPI) -> None:
     async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
         return problem(exc.status, exc.code, exc.detail, exc.headers)
 
-    @app.exception_handler(sqlite3.OperationalError)
-    async def sqlite_error_handler(request: Request, exc: sqlite3.OperationalError) -> JSONResponse:
-        if (exc.sqlite_errorname or "").startswith(RETRYABLE_SQLITE_ERRORS):
+    @app.exception_handler(DBAPIError)
+    @app.exception_handler(PoolTimeoutError)
+    async def db_error_handler(request: Request, exc: DBAPIError | PoolTimeoutError) -> JSONResponse:
+        if is_temporarily_unavailable(exc):
             headers = {"Retry-After": str(RETRY_AFTER_SECONDS)}
             return problem(503, "UNAVAILABLE", "Database unavailable", headers)
-        # Any other OperationalError (e.g. "no such table") is a bug; retrying would not help.
+        # Any other DB error (e.g. missing table, bad SQL) is a bug; retrying would not help.
+        logger.error("Database error that is not temporary", exc_info=exc)
         return problem(500, "UNAVAILABLE", "Internal server error")
 
     @app.exception_handler(RequestValidationError)
@@ -66,4 +70,6 @@ def register_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+        # The client gets the generic body; the traceback goes to the server log only.
+        logger.error("Unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
         return problem(500, "UNAVAILABLE", "Internal server error")

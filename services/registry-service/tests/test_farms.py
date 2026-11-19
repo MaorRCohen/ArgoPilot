@@ -40,6 +40,26 @@ def test_get_unknown_farm(client, assert_problem):
     assert_problem(client.get("/v1/farms/no-such-farm"), 404, "NOT_FOUND")
 
 
+def test_farm_area_sums_plots(client):
+    response = client.get(f"/v1/farms/{DEMO_FARM_ID}/area")
+
+    assert response.status_code == 200
+    assert response.json() == {"farm_id": DEMO_FARM_ID, "total_area_m2": 1800.0}
+
+
+def test_farm_area_without_plots_is_zero(client):
+    farm_id = create_farm(client, "Empty farm").json()["id"]
+
+    response = client.get(f"/v1/farms/{farm_id}/area")
+
+    assert response.status_code == 200
+    assert response.json() == {"farm_id": farm_id, "total_area_m2": 0.0}
+
+
+def test_farm_area_unknown_farm(client, assert_problem):
+    assert_problem(client.get("/v1/farms/no-such-farm/area"), 404, "NOT_FOUND")
+
+
 def test_patch_farm_name_keeps_id(client):
     response = client.patch(f"/v1/farms/{DEMO_FARM_ID}", json={"name": "Renamed"})
 
@@ -110,3 +130,9 @@ def test_patch_farm_with_unknown_field(client, assert_problem):
     assert_problem(
         client.patch(f"/v1/farms/{DEMO_FARM_ID}", json={"nmae": "typo"}), 422, "VALIDATION"
     )
+
+
+def test_delete_farm_with_plots_is_409_not_500(client, assert_problem):
+    # The plots.farm_id foreign key would also block this; the count check must answer first with 409.
+    assert_problem(client.delete(f"/v1/farms/{EAST_FARM_ID}"), 409, "CONFLICT")
+    assert client.get(f"/v1/farms/{EAST_FARM_ID}").status_code == 200

@@ -1,0 +1,28 @@
+{
+  "_readme": "Data only. Single source of crop values for the planner. Keys are the registry crop ids. Adding a crop = adding an entry, not code. Every value has a 'source'. FAO-56 = Allen et al. 1998; facts checked in docs/research/fao56.md.",
+  "tomato": {
+    "name": "Tomato",
+    "kc_ini": {"value": 0.6, "source": "FAO-56 Table 12, Solanaceae group row, footnote 1 (the 'Kc ini' header is an image, identified by position)"},
+    "kc_mid": {"value": 1.15, "source": "FAO-56 Table 12, tomato, footnote 2 (staked tomato would be 1.20, not used)"},
+    "kc_end": {"value": 0.80, "source": "FAO-56 Table 12 gives the range 0.70-0.90 and no rule inside it. 0.80 = middle of the range, owner decision (judgment log)", "range": [0.70, 0.90]},
+    "height_m": {"value": 0.6, "source": "FAO-56 Table 12, tomato, max crop height h"},
+    "stage_rows": [
+      {"region": "Arid Region", "planting_time": "January", "init_days": 30, "dev_days": 40, "mid_days": 40, "late_days": 25, "total_days": 135, "source": "FAO-56 Table 11, tomato"},
+      {"region": "Calif., USA", "planting_time": "Apr/May", "init_days": 35, "dev_days": 40, "mid_days": 50, "late_days": 30, "total_days": 155, "source": "FAO-56 Table 11, tomato"},
+      {"region": "Calif. Desert, USA", "planting_time": "Jan", "init_days": 25, "dev_days": 40, "mid_days": 60, "late_days": 30, "total_days": 155, "source": "FAO-56 Table 11, tomato"},
+      {"region": "Arid Region", "planting_time": "Oct/Nov", "init_days": 35, "dev_days": 45, "mid_days": 70, "late_days": 30, "total_days": 180, "source": "FAO-56 Table 11, tomato"},
+      {"region": "Mediterranean", "planting_time": "April/May", "init_days": 30, "dev_days": 40, "mid_days": 45, "late_days": 30, "total_days": 145, "default": true, "source": "FAO-56 Table 11, tomato. Default: Mediterranean row (closest to the Negev plots)"}
+    ]
+  },
+  "bell-pepper": {
+    "name": "Bell pepper",
+    "kc_ini": {"value": 0.6, "source": "FAO-56 Table 12, Solanaceae group row, footnote 1 (the 'Kc ini' header is an image, identified by position)"},
+    "kc_mid": {"value": 1.05, "source": "FAO-56 Table 12, sweet peppers (bell), footnote 2 (staked pepper would be 1.15, not used)"},
+    "kc_end": {"value": 0.90, "source": "FAO-56 Table 12, sweet peppers (bell)"},
+    "height_m": {"value": 0.7, "source": "FAO-56 Table 12, sweet peppers (bell), max crop height h"},
+    "stage_rows": [
+      {"region": "Europe and Medit.", "planting_time": "April/June", "init_days": 30, "init_days_printed": "25/30", "dev_days": 35, "mid_days": 40, "late_days": 20, "total_days": 125, "default": true, "source": "FAO-56 Table 11, sweet peppers (bell). Table prints init as '25/30'; 30 chosen because 30+35+40+20 = 125 (inference, not stated by FAO). Default: Mediterranean row"},
+      {"region": "Arid Region", "planting_time": "October", "init_days": 30, "dev_days": 40, "mid_days": 110, "late_days": 30, "total_days": 210, "source": "FAO-56 Table 11, sweet peppers (bell)"}
+    ]
+  }
+}
