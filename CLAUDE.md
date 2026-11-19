@@ -6,9 +6,9 @@
 - Explain each change in 2-3 lines so I can present it.
 - If you suggest something non-obvious, say so: I log decisions in docs/judgment-log.md.
 - Node/npm: always use the WSL nvm Node (export PATH=/home/maorc/.nvm/versions/node/v26.13.1/bin:$PATH); never the Windows npm under /mnt/c.
-- Settings live only in `services/registry-service/config.py` (pydantic-settings). Never read or create a `.env` file.
+- Settings live only in each service's `config.py` (pydantic-settings). Never read or create a `.env` file.
 
-## Current task: P1 Registry API
+## P1 Registry API
 Spec: https://github.com/alonitac/OzVeruach26/blob/main/tasks/p1_registry_api.md
 Service: services/registry-service (FastAPI, main.py at service root, run: `uv run uvicorn main:app --host 127.0.0.1 --port 8000`).
 
@@ -19,7 +19,7 @@ Service: services/registry-service (FastAPI, main.py at service root, run: `uv r
 - Every SQLite connection runs `PRAGMA foreign_keys = ON`.
 - Schema comes from `seed_registry.sh` (do not change it). Reset data: `bash seed_registry.sh`.
 - `registry.db` is git-ignored.
-- Few files: main.py, db.py, models.py, errors.py (+ tests), setup_db.py (P2 setup and seed command).
+- Few files: main.py, db.py, models.py, errors.py, config.py (+ tests), setup_db.py (P2 setup and seed command).
 - Farm ids are server-generated with `str(uuid.uuid4())`; the client sends only `name`.
 - Farm names are unique in code (`farm_name_taken`), not via a DB constraint, because the schema cannot change. PATCH renaming a farm to its own name is allowed.
 - PATCH uses `model_dump(exclude_unset=True)`: `{}` -> 422 "no fields to update"; `name` null or "" -> 422.
@@ -46,8 +46,14 @@ Service: services/registry-service (FastAPI, main.py at service root, run: `uv r
 - `results.txt` is committed as evidence for the PR. `tee` hides k6's exit code, so read pass/fail from the ✓/✗ marks in the summary.
 ## P2 weather-service (services/weather-service)
 Spec: `~/course/OzVeruach26/tasks/p2.md`, section "The weather-service" (FR-2.3..FR-2.8, NFR-2.3). FastAPI on port 8001, `main.py` at the service root, run: `uv run uvicorn main:app --host 127.0.0.1 --port 8001`. Same rules as above: settings only in its `config.py` (never read or create `.env`), services never import each other's code, no extras.
-- This service is the ONLY retry point in the chain (3 attempts, jittered backoff, 4 s budget). Callers must not retry it: planner-service calls it once, no retries, with a timeout a bit above 4 s (for example 5 s).
+- This service is the ONLY retry point in the chain (3 attempts, jittered backoff, 4 s budget). Callers must not retry it: planner-service calls it once, no retries, with a 4.5 s timeout (`weather_timeout_s`).
 - Open-Meteo's field names, units and request live in `provider.py` only. Anything wrong in an answer is a provider failure: never zeros, never defaults (FR-2.8). `rain_mm = rain_sum + showers_sum` (liquid water only, no snow).
 - Cache: memory only, one LRU dict per grid cell (`fetched_at` decides freshness, request order decides eviction). Fresh 3 h, max stale 24 h, single-flight per cell, 30 s cooldown after a failed cell. Reasons: service README and judgment log entries 91-102.
 - Frontend (later): show the forecast age from `fetched_at`, and a stronger warning when it is older than 6 h.
 - Tests: `uv run pytest` from `services/weather-service`. No internet: the provider is an `httpx.MockTransport`, time is frozen with time-machine. The dev dependency `httpx2` is only for Starlette's TestClient.
+
+## P2 planner-service (services/planner-service)
+Spec: `~/course/OzVeruach26/tasks/p2.md`, section "The `planner-service`". FastAPI on port 8002, run: `uv run uvicorn main:app --host 127.0.0.1 --port 8002`. Calls registry (8000, 1.0 s timeout) and weather (8001, 4.5 s timeout), no retries (judgment log 120). Keeps no state.
+
+## P2 frontend (services/frontend)
+Spec: `~/course/OzVeruach26/tasks/p2.md`, section "The `frontend`". Next.js 16 with npm (`package-lock.json`); `npm run dev` serves http://localhost:3000. Read `services/frontend/AGENTS.md` first: this Next.js version has breaking changes.
