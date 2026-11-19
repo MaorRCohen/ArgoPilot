@@ -747,7 +747,7 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **Research:** none.
 
 ### 123. Choices the skill does not cover (please confirm each)
-- **AI suggested / I decided:** (confirm all)
+- **AI suggested / I decided:** confirmed by Maor on 2026-11-20 (all 14).
   1. `today` = the first forecast date (the weather-service's local "today" at the plot); the planner has no clock for plan dates. `generated_at` is the server's UTC clock.
   2. `season_ended` is true when the first plan day is past the season length (later days may be `ended` without the flag).
   3. A forecast date before planting (time-zone edge) is treated as the planting day (day 0).
@@ -762,6 +762,7 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
   12. `UNIFORMITY_FACTOR` must be 1 or more.
   13. The plot id is URL-quoted before it goes to the registry.
   14. Unhandled errors: 500 with `code` `INTERNAL_ERROR` (the weather-service uses `UNAVAILABLE` there, which would be wrong here).
+     *Maor, 2026-11-20:* the planner keeps `INTERNAL_ERROR` for unhandled 500s: `UNAVAILABLE` would tell clients to retry a bug. The registry keeps `UNAVAILABLE` because the P1 spec gives a closed code list; the P2 spec defines no 500 code for the planner. Open question for Alon: unify the 500 code across services?
 - **Why:** each was needed to write working code and the skill is silent. Entries 110-118 stay as they are.
 - **Research:** none.
 
@@ -957,3 +958,21 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** PostgreSQL runs only against `registry_test`, never `registry`. A small launcher outside the repo loaded the settings in-process, ran the `tests/pg_guard.py` checks, set `DATABASE_URL` to the test URL without printing it, and reseeded the database with `setup_db.run_setup` (the wipe is the same one the test fixture does). Both sides had 2 farms and 4 plots and returned identical JSON for the four GET endpoints before measuring. **Result, median of 3 p95, ms, SQLite / PostgreSQL:** farms list 23.5 / 32.2, farm by id 23.2 / 31.4, plots list 24.3 / 32.6, plot by id 23.8 / 32.2 (p50: 17 to 19 / 24 to 25). All 6 runs: 0 failed, 0 dropped, thresholds passed. Nothing committed; the worktree and temp dirs were removed. Full table, method and machine conditions: `services/registry-service/perf/results.txt`.
 - **Why:** *Alternating in one session:* host drift hits both sides alike (entry 62 saw 27 to 58 ms in one session; entry 90's 58 ms is from another day than the SQLite runs). *Median of 3:* one run varies (SQLite p95 was 23.1 to 27.6 ms across the 12 values). *The test database:* a load test must not run on, or wipe, the real `registry`; `registry_test` is the one database the repo already treats as disposable, and the guards run first. **Interpretation:** PostgreSQL is really slower, by about 8 ms at p95 (+35 %) and 7 ms at p50, in every run and every endpoint, with no overlap between the two sides. It is still far under the 100 ms target (about 3x headroom), so NFR-1.1 holds and no code change is needed. The 58 ms of entry 90 was not reproduced; host drift is the likely cause, but that run used the real `registry` database and the `registry_app` role, which I did not measure, so it is not proven. **Not isolated:** why PostgreSQL costs 8 ms more. The uvicorn process used about 45 s of CPU per run against about 34 s on SQLite, which fits more client-side work per request (loopback TCP, psycopg), but I did not test `pool_pre_ping` or anything else here (entry 62 found no effect from the pre-ping).
 - **Research:** none; measurement only (k6 `--summary-export` per-scenario metrics).
+
+### 152. Owner re-check of worked cases A, B and C (2026-11-20)
+- **AI suggested:** the worked cases in `decisions.md` are the tests' expected values. Case A was calculated by the owner; B and C were completed with the AI and needed the owner's check.
+- **I decided:** the owner re-checked cases A, B and C by hand, with Claude in chat, on 2026-11-20. The "must be re-checked" note in `decisions.md` is replaced by that line. No engine change.
+- **Why:** the tests assert these numbers, so a person has to check them, not the AI.
+- **Research:** none.
+
+### 153. Run minutes rounded up (ceil)
+- **AI suggested:** normal rounding of run minutes to the nearest minute.
+- **I decided:** `run_minutes = ceil(litres / system_flow_lph x 60)`, always rounded up; 0 when there is no irrigation.
+- **Why:** never under-irrigate. Rounding down can give the crop less water than the balance asks for. Examples: 851.4 becomes 852, 71.3 becomes 72. The cost is at most one minute per run.
+- **Research:** none. The engine already does this (`minutes_for` in `engine.py`; test `test_minutes_are_rounded_up`).
+
+### 154. New root layer at field capacity: depletion kept as the root zone deepens
+- **AI suggested:** when Zr grows, add the new layer's water to the depletion, as the new soil is dry.
+- **I decided:** depletion in mm is kept when Zr grows; only TAW grows. The new layer is assumed at field capacity. Depletion is still capped at the day's TAW. Known simplification.
+- **Why:** the effect is small: 175 x 0.20 / 65 ≈ 0.54 mm/day, and only until day 65. Drip wets a bulb below the roots. The planner is stateless and the grower re-reports soil_moisture each run, which corrects any drift.
+- **Research:** FAO-56 Ch. 8, Example 38 and its footnote 5, which assumes the subsoil is at field capacity (`services/planner-service/docs/research/fao56.md` §4). Drip root zone: see entry 111.

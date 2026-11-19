@@ -32,6 +32,7 @@ Errors are `application/problem+json` with a `code`:
 | 404 | `NOT_FOUND` | The registry does not know the plot. |
 | 409 | `CONFLICT` | The plot's crop has no entry in `crop_profiles.json` (a data gap, not a server bug). |
 | 503 | `UPSTREAM_UNAVAILABLE` | The registry-service or weather-service is down, too slow, answered 5xx, or sent a body we cannot use. `detail` names the service. `Retry-After` is the weather-service's own when it sent one, else `RETRY_AFTER_S`. Never a plan of zeros. |
+| 500 | `INTERNAL_ERROR` | An unhandled error, a bug in this service. Not `UNAVAILABLE`: that would tell clients to retry a bug. |
 
 ## Example
 

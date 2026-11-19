@@ -15,9 +15,11 @@ All decided by the owner; logged in `docs/judgment-log.md` (entries from 110). S
 | Climate adjustment from plan-day averages | per-day Kc adjustment | FAO adjusts stage-average Kc (Ch. 6). One windy day should not move Kc. |
 | Default stage row: Mediterranean | Arid or Californian rows | Closest to the farms. Tomato Apr/May 30/40/45/30; pepper Europe and Medit. 30/35/40/20 (init printed "25/30", 30 inferred from the 125 total). |
 | Single Kc, no Ks, no Ke | dual Kcb + Ke (Annex 8) | Planning-level model for a daily plan; FAO Table 10 allows single Kc for basic schedules. Ks is not needed because we irrigate at 30 %, before FAO's stress point. |
+| Run minutes rounded UP (`ceil`) | normal rounding (nearest minute) | Never under-irrigate: e.g. 851.4 → 852, 71.3 → 72. |
+| As the drip root zone deepens, the new layer is assumed at field capacity: depletion unchanged, only TAW grows | adding the new layer's water as depletion | Small effect: 175 x 0.20 / 65 ≈ 0.54 mm/day, only until day 65. Drip wets a bulb below the roots; the planner is stateless and the grower re-reports soil_moisture each run. Known simplification. |
 
 ## Worked cases (calculated by hand)
-Tests must use these as expected values. Case A was calculated by the owner; B and C were completed with the AI and must be re-checked by the owner. All values were checked against the rules in SKILL.md and `formulas.md` with a scratch script (not committed). Tables show the rounded values, and the engine computes from these same rounded values.
+Tests must use these as expected values. Case A was calculated by the owner; the owner re-checked A, B and C on 2026-11-20. All values were checked against the rules in SKILL.md and `formulas.md` with a scratch script (not committed). Tables show the rounded values, and the engine computes from these same rounded values.
 
 ### A. Tomato mid-season, soil_moisture 6, no rain
 - Plot North block, 1000 m2, loam 175 mm/m, rows 1.5 m, emitters 0.4 m, 1.0 L/h: 1666.67 emitters, 1666.67 L/h.
