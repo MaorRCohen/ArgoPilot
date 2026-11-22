@@ -38,5 +38,3 @@ From `services/registry-service`: `uv run pytest`. Each test runs against a fres
 Measured locally on 2026-11-03 at 10 rps per endpoint (40 rps total) with k6 `constant-arrival-rate`: p95 is 25.0 ms for farms list, 25.1 ms for farm by id, 27.3 ms for plots list and 25.9 ms for plot by id (NFR-1.1 target: p95 <= 100 ms). Rerun after a fresh `bash seed_registry.sh`, with the server running without `--reload` (the script uses fixed seed ids): `k6 run --quiet perf/registry_load.js`
 
 Design decisions and their reasons: [../../docs/judgment-log.md](../../docs/judgment-log.md)
-
-BUG: this commit simulates a bad release (CD rollback exercise)
