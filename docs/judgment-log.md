@@ -280,3 +280,10 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 ### 47. Coverage as a CI gate
 - **I decided:** fail_under=100 as a CI gate; upload the HTML report with `if: always()`; the action is pinned to a SHA.
 - **Why:** coverage can't silently drop; the report is available exactly when the run fails. Same supply-chain rule as entries 44 and 45.
+
+## CI – dependency audit (feat/audit)
+
+### 48. Separate parallel audit job
+- **I decided:** separate parallel "audit" job (`uv audit` vs OSV), same SHA pins as the test job.
+- **Why:** tests check our code; audit checks the third-party packages in uv.lock. Parallel = no extra wait. Local scan found 0 vulnerabilities in 33 packages.
+- **Research:** tutorial Exercise B.
