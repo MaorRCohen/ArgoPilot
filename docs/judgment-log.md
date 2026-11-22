@@ -262,3 +262,9 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** pin both actions to full commit SHA with a version comment.
 - **Why:** CI failed "unable to find version v10" (setup-uv publishes only full version tags); SonarCloud quality gate failed "Use full commit SHA hash"; a SHA is immutable, a tag can be moved (supply-chain risk).
 - **Research:** setup-uv and checkout release pages; SHAs verified against the release commits.
+
+### 45. Install and test without building packages
+- **AI suggested:** tutorial commands "uv sync --locked" and "uv run pytest".
+- **I decided:** add --no-build to both and --locked to uv run.
+- **Why:** SonarCloud quality gate (Security Rating C): install scripts of third-party packages can run code in CI (supply-chain risk, rule S6505), and uv run without --locked may re-resolve versions. All our deps ship wheels, so no build is needed. Checked in uv.lock: all 32 packages have wheels, and pyproject.toml has no [build-system], so the project itself is not built either. Verified locally with the exact CI commands (`uv sync --locked --no-build && uv run --locked --no-build pytest`): 67 passed.
+- **Research:** SonarSource rule RSPEC-6505; uv docs.
