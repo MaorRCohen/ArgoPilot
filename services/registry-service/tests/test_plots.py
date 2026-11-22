@@ -1,6 +1,9 @@
+import sqlite3
 import uuid
 
 import pytest
+
+import main
 
 DEMO_FARM_ID = "b7e2c0a0-3c1d-4f0a-9a11-0c5d2e6f1001"  # seeded, has North block and East block
 EAST_FARM_ID = "a9c1e4b2-6f70-4d8e-a144-3f8b5c904004"  # seeded, has West block and Greenhouse
@@ -177,6 +180,41 @@ def test_create_plot_with_same_name_in_other_farm(client, plot_payload):
 
 def test_create_plot_with_empty_name(client, plot_payload, assert_problem):
     assert_problem(create_plot(client, plot_payload(name="")), 422, "VALIDATION")
+
+
+def test_create_plot_that_loses_unique_race_returns_409(
+    client, plot_payload, assert_problem, monkeypatch
+):
+    # Both requests pass the name check; the UNIQUE constraint rejects the second insert.
+    monkeypatch.setattr(main, "plot_name_taken", lambda *args, **kwargs: False)
+
+    def insert_loses_race(*args):
+        raise sqlite3.IntegrityError("UNIQUE constraint failed: plots.farm_id, plots.name")
+
+    monkeypatch.setattr(main, "insert_plot", insert_loses_race)
+
+    response = create_plot(client, plot_payload())
+
+    assert_problem(response, 409, "CONFLICT")
+    assert response.json()["detail"] == "plot name already exists in this farm"
+
+
+def test_create_plot_with_other_integrity_error_returns_500(
+    client_no_reraise, plot_payload, assert_problem, monkeypatch
+):
+    # Only the UNIQUE(farm_id, name) error maps to 409; any other IntegrityError is a bug.
+    monkeypatch.setattr(main, "plot_name_taken", lambda *args, **kwargs: False)
+
+    def insert_breaks_fk(*args):
+        raise sqlite3.IntegrityError("FOREIGN KEY constraint failed")
+
+    monkeypatch.setattr(main, "insert_plot", insert_breaks_fk)
+
+    response = create_plot(client_no_reraise, plot_payload())
+
+    assert_problem(response, 500, "UNAVAILABLE")
+    assert response.json()["detail"] == "Internal server error"
+    assert "FOREIGN KEY" not in response.text
 
 
 @pytest.mark.parametrize("field", ["farm_id", "crop_id", "soil_id", "emitter_id"])

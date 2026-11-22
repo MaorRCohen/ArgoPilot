@@ -48,6 +48,12 @@ def client(db_path) -> TestClient:
 
 
 @pytest.fixture
+def client_no_reraise(db_path) -> TestClient:
+    # Unhandled exceptions come back as a 500 response instead of being re-raised into the test.
+    return TestClient(app, raise_server_exceptions=False)
+
+
+@pytest.fixture
 def assert_problem():
     # Checks an error response: status, problem+json content type, and the code field.
     def check(response, status: int, code: str) -> None:
