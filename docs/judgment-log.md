@@ -254,3 +254,11 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **AI suggested:** none; the spec's formula is taken as written.
 - **I decided:** no rounding of area_dunam.
 - **Why:** the spec defines area_m2 / 1000, rounding would lose information, and it is easy to explain.
+
+## CI – pin actions
+
+### 44. Pin GitHub Actions to full commit SHAs
+- **AI suggested:** tutorial used floating tag setup-uv@v10.
+- **I decided:** pin both actions to full commit SHA with a version comment.
+- **Why:** CI failed "unable to find version v10" (setup-uv publishes only full version tags); SonarCloud quality gate failed "Use full commit SHA hash"; a SHA is immutable, a tag can be moved (supply-chain risk).
+- **Research:** setup-uv and checkout release pages; SHAs verified against the release commits.
