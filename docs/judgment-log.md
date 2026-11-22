@@ -245,3 +245,26 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** in between (~35–40 lines). Keep everything a newcomer needs to run and call the service; errors and performance as one line each; decisions only linked, not repeated.
 - **Why:** "short" was the requirement; the reasons already live in the judgment log.
 - **Self-review (2 rounds) before sending:** numbers from perf/results.txt with their measurement conditions (a bare p95 reads like a promise for any load); no test count (goes stale); endpoint table derived from main.py; Python version from .python-version; explicit length limit; the load-test command needs a fresh seed and a running server because the script uses fixed seed ids.
+
+## Feature – plot area in dunams (feat/plot-area)
+
+### 43. No rounding of area_dunam
+- **Task:** tutorials/github_actions_intro.md section 3: `GET /v1/plots/{id}/area` returns `area_dunam = area_m2 / 1000`.
+- **Research:** tutorial section 3 (tutorials/github_actions_intro.md).
+- **AI suggested:** none; the spec's formula is taken as written.
+- **I decided:** no rounding of area_dunam.
+- **Why:** the spec defines area_m2 / 1000, rounding would lose information, and it is easy to explain.
+
+## CI – pin actions
+
+### 44. Pin GitHub Actions to full commit SHAs
+- **AI suggested:** tutorial used floating tag setup-uv@v10.
+- **I decided:** pin both actions to full commit SHA with a version comment.
+- **Why:** CI failed "unable to find version v10" (setup-uv publishes only full version tags); SonarCloud quality gate failed "Use full commit SHA hash"; a SHA is immutable, a tag can be moved (supply-chain risk).
+- **Research:** setup-uv and checkout release pages; SHAs verified against the release commits.
+
+### 45. Install and test without building packages
+- **AI suggested:** tutorial commands "uv sync --locked" and "uv run pytest".
+- **I decided:** add --no-build to both and --locked to uv run.
+- **Why:** SonarCloud quality gate (Security Rating C): install scripts of third-party packages can run code in CI (supply-chain risk, rule S6505), and uv run without --locked may re-resolve versions. All our deps ship wheels, so no build is needed. Checked in uv.lock: all 32 packages have wheels, and pyproject.toml has no [build-system], so the project itself is not built either. Verified locally with the exact CI commands (`uv sync --locked --no-build && uv run --locked --no-build pytest`): 67 passed.
+- **Research:** SonarSource rule RSPEC-6505; uv docs.

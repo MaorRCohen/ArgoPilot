@@ -35,6 +35,12 @@ class Plot(BaseModel):
     lon: float
 
 
+class PlotArea(BaseModel):
+    plot_id: str
+    area_m2: float
+    area_dunam: float
+
+
 class PlotCreate(RequestModel):
     name: str = Field(min_length=1)
     farm_id: str
