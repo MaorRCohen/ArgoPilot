@@ -268,3 +268,15 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** add --no-build to both and --locked to uv run.
 - **Why:** SonarCloud quality gate (Security Rating C): install scripts of third-party packages can run code in CI (supply-chain risk, rule S6505), and uv run without --locked may re-resolve versions. All our deps ship wheels, so no build is needed. Checked in uv.lock: all 32 packages have wheels, and pyproject.toml has no [build-system], so the project itself is not built either. Verified locally with the exact CI commands (`uv sync --locked --no-build && uv run --locked --no-build pytest`): 67 passed.
 - **Research:** SonarSource rule RSPEC-6505; uv docs.
+
+## Coverage (feat/coverage)
+
+### 46. Testing error paths that only a race or a crash reaches
+- **AI suggested:** mock the 500 handler and the IntegrityError race with monkeypatch.
+- **I decided:** mock, not a real thread race.
+- **Why:** a real race is non-deterministic (flaky); the guard exists for concurrency we can't reproduce reliably.
+- **Research:** tutorial Exercise A (monkeypatch).
+
+### 47. Coverage as a CI gate
+- **I decided:** fail_under=100 as a CI gate; upload the HTML report with `if: always()`; the action is pinned to a SHA.
+- **Why:** coverage can't silently drop; the report is available exactly when the run fails. Same supply-chain rule as entries 44 and 45.
