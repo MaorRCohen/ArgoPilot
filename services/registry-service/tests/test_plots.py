@@ -5,6 +5,7 @@ import pytest
 DEMO_FARM_ID = "b7e2c0a0-3c1d-4f0a-9a11-0c5d2e6f1001"  # seeded, has North block and East block
 EAST_FARM_ID = "a9c1e4b2-6f70-4d8e-a144-3f8b5c904004"  # seeded, has West block and Greenhouse
 NORTH_BLOCK_ID = "c8f3d1b0-4d2e-5a1b-8b22-1d6e3f702002"
+EAST_BLOCK_ID = "d9a4e2c1-5e3f-4b6a-9c33-2e7f4a803003"
 PLOT_FIELDS = {
     "id",
     "farm_id",
@@ -85,6 +86,29 @@ def test_get_plot(client):
 
 def test_get_unknown_plot(client, assert_problem):
     assert_problem(client.get("/v1/plots/no-such-plot"), 404, "NOT_FOUND")
+
+
+def test_get_plot_area_north_block(client):
+    response = client.get(f"/v1/plots/{NORTH_BLOCK_ID}/area")
+
+    assert response.status_code == 200
+    assert set(response.json()) == {"plot_id", "area_m2", "area_dunam"}
+    assert response.json() == {"plot_id": NORTH_BLOCK_ID, "area_m2": 1000, "area_dunam": 1.0}
+
+
+def test_get_plot_area_east_block(client):
+    response = client.get(f"/v1/plots/{EAST_BLOCK_ID}/area")
+
+    assert response.status_code == 200
+    assert response.json() == {"plot_id": EAST_BLOCK_ID, "area_m2": 800, "area_dunam": 0.8}
+
+
+def test_get_area_of_unknown_plot(client, assert_problem):
+    response = client.get("/v1/plots/no-such-plot/area")
+
+    assert_problem(response, 404, "NOT_FOUND")
+    # Without this check, an unknown route would also pass: it returns the same 404 NOT_FOUND shape.
+    assert response.json()["detail"] == "Plot not found"
 
 
 def test_patch_one_field_keeps_others(client):

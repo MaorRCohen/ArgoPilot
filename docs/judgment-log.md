@@ -245,3 +245,12 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** in between (~35–40 lines). Keep everything a newcomer needs to run and call the service; errors and performance as one line each; decisions only linked, not repeated.
 - **Why:** "short" was the requirement; the reasons already live in the judgment log.
 - **Self-review (2 rounds) before sending:** numbers from perf/results.txt with their measurement conditions (a bare p95 reads like a promise for any load); no test count (goes stale); endpoint table derived from main.py; Python version from .python-version; explicit length limit; the load-test command needs a fresh seed and a running server because the script uses fixed seed ids.
+
+## Feature – plot area in dunams (feat/plot-area)
+
+### 43. No rounding of area_dunam
+- **Task:** tutorials/github_actions_intro.md section 3: `GET /v1/plots/{id}/area` returns `area_dunam = area_m2 / 1000`.
+- **Research:** tutorial section 3 (tutorials/github_actions_intro.md).
+- **AI suggested:** none; the spec's formula is taken as written.
+- **I decided:** no rounding of area_dunam.
+- **Why:** the spec defines area_m2 / 1000, rounding would lose information, and it is easy to explain.

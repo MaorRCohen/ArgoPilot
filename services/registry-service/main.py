@@ -30,6 +30,7 @@ from models import (
     FarmCreate,
     FarmPatch,
     Plot,
+    PlotArea,
     PlotCreate,
     PlotPatch,
     Soil,
@@ -164,6 +165,16 @@ def list_plots(
 @app.get("/v1/plots/{plot_id}", response_model=Plot)
 def get_plot(plot_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
     return get_plot_or_404(conn, plot_id)
+
+
+@app.get("/v1/plots/{plot_id}/area", response_model=PlotArea)
+def get_plot_area(plot_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    plot = get_plot_or_404(conn, plot_id)
+    return {
+        "plot_id": plot["id"],
+        "area_m2": plot["area_m2"],
+        "area_dunam": plot["area_m2"] / 1000,  # 1 dunam = 1000 m2; no rounding, per the spec
+    }
 
 
 @app.patch("/v1/plots/{plot_id}", response_model=Plot)
