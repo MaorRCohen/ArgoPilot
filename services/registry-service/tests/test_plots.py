@@ -2,6 +2,7 @@ import sqlite3
 import uuid
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 import main
 
@@ -185,36 +186,47 @@ def test_create_plot_with_empty_name(client, plot_payload, assert_problem):
 def test_create_plot_that_loses_unique_race_returns_409(
     client, plot_payload, assert_problem, monkeypatch
 ):
-    # Both requests pass the name check; the UNIQUE constraint rejects the second insert.
+    # The name check is skipped, as if a second request had passed it at the same moment.
+    # The real UNIQUE(farm_id, name) constraint then rejects the duplicate "North block".
     monkeypatch.setattr(main, "plot_name_taken", lambda *args, **kwargs: False)
 
-    def insert_loses_race(*args):
-        raise sqlite3.IntegrityError("UNIQUE constraint failed: plots.farm_id, plots.name")
-
-    monkeypatch.setattr(main, "insert_plot", insert_loses_race)
-
-    response = create_plot(client, plot_payload())
+    response = create_plot(client, plot_payload(name="North block"))
 
     assert_problem(response, 409, "CONFLICT")
     assert response.json()["detail"] == "plot name already exists in this farm"
 
 
+def test_create_plot_that_loses_reference_race_returns_422(
+    client, plot_payload, assert_problem, monkeypatch
+):
+    # The reference check is skipped, as if the crop were deleted just before the insert.
+    # The real foreign key rejects the insert.
+    monkeypatch.setattr(main, "check_references", lambda *args: None)
+
+    response = create_plot(client, plot_payload(crop_id="no-such-crop"))
+
+    assert_problem(response, 422, "VALIDATION")
+    assert response.json()["detail"] == "referenced id: not found"
+
+
 def test_create_plot_with_other_integrity_error_returns_500(
     client_no_reraise, plot_payload, assert_problem, monkeypatch
 ):
-    # Only the UNIQUE(farm_id, name) error maps to 409; any other IntegrityError is a bug.
+    # Only UNIQUE(farm_id, name) maps to 409 and a foreign key to 422; any other IntegrityError is a bug.
     monkeypatch.setattr(main, "plot_name_taken", lambda *args, **kwargs: False)
 
-    def insert_breaks_fk(*args):
-        raise sqlite3.IntegrityError("FOREIGN KEY constraint failed")
+    def insert_breaks_not_null(*args):
+        raise IntegrityError(
+            "INSERT INTO plots", {}, sqlite3.IntegrityError("NOT NULL constraint failed: plots.name")
+        )
 
-    monkeypatch.setattr(main, "insert_plot", insert_breaks_fk)
+    monkeypatch.setattr(main, "insert_plot", insert_breaks_not_null)
 
     response = create_plot(client_no_reraise, plot_payload())
 
     assert_problem(response, 500, "UNAVAILABLE")
     assert response.json()["detail"] == "Internal server error"
-    assert "FOREIGN KEY" not in response.text
+    assert "NOT NULL" not in response.text
 
 
 @pytest.mark.parametrize("field", ["farm_id", "crop_id", "soil_id", "emitter_id"])
@@ -270,3 +282,35 @@ def test_planting_date_rejected_where_it_is_still_today(client, plot_payload, as
 
     assert_problem(response, 422, "VALIDATION")
     assert response.json()["detail"] == "planting_date is in the future"
+
+
+# Postgres-proof tests (run on SQLite and Postgres).
+def test_patch_plot_without_planting_date_returns_200(client):
+    # The stored date is read back as a date object on Postgres; it must still be re-checked and returned as text.
+    response = client.patch(f"/v1/plots/{NORTH_BLOCK_ID}", json={"name": "Renamed block"})
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Renamed block"
+    assert isinstance(response.json()["planting_date"], str)
+
+
+def test_plot_with_unknown_crop_soil_emitter_farm_is_422(client, plot_payload, assert_problem):
+    for field in ("crop_id", "soil_id", "emitter_id", "farm_id"):
+        response = create_plot(client, plot_payload(**{field: "no-such-id"}))
+        assert_problem(response, 422, "VALIDATION")
+
+
+def test_duplicate_plot_name_is_409(client, plot_payload, assert_problem):
+    assert create_plot(client, plot_payload(name="Twin")).status_code == 201
+
+    assert_problem(create_plot(client, plot_payload(name="Twin")), 409, "CONFLICT")
+
+
+def test_plot_response_has_iso_date_and_float_lat_lon(client):
+    plot = client.get(f"/v1/plots/{NORTH_BLOCK_ID}").json()
+
+    assert isinstance(plot["planting_date"], str)
+    assert len(plot["planting_date"]) == 10 and plot["planting_date"][4] == "-"
+    for field in ("lat", "lon", "area_m2", "row_spacing_m", "emitter_spacing_m"):
+        assert isinstance(plot[field], (int, float)), field
+    assert isinstance(plot["lat"], float) and isinstance(plot["lon"], float)

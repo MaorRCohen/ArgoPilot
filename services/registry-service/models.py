@@ -12,6 +12,11 @@ class Farm(BaseModel):
     name: str
 
 
+class FarmArea(BaseModel):
+    farm_id: str
+    total_area_m2: float = Field(ge=0)
+
+
 class FarmCreate(RequestModel):
     name: str = Field(min_length=1)
 
@@ -37,8 +42,8 @@ class Plot(BaseModel):
 
 class PlotArea(BaseModel):
     plot_id: str
-    area_m2: float
-    area_dunam: float
+    area_m2: float = Field(ge=0)
+    area_dunam: float = Field(ge=0)
 
 
 class PlotCreate(RequestModel):
@@ -84,3 +89,12 @@ class Emitter(BaseModel):
     id: str
     name: str
     flow_lph: float
+
+
+class IrrigationVolumeRequest(RequestModel):
+    area_m2: float = Field(gt=0, allow_inf_nan=False)
+    depth_mm: float = Field(ge=0, allow_inf_nan=False)
+
+
+class IrrigationVolume(BaseModel):
+    volume_l: float

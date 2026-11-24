@@ -1,0 +1,52 @@
+
+
+  █ THRESHOLDS 
+
+    checks{scenario:fresh_forecast}
+    ✓ 'rate==1' rate=100.00%
+
+    checks{scenario:warmup}
+    ✓ 'rate==1' rate=100.00%
+
+    dropped_iterations{scenario:fresh_forecast}
+    ✓ 'count==0' count=0
+
+    http_req_duration{scenario:fresh_forecast}
+    ✓ 'p(95)<=100' p(95)=6.42ms
+
+    http_req_failed{scenario:fresh_forecast}
+    ✓ 'rate==0' rate=0.00%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 3612    27.929573/s
+    checks_succeeded...: 100.00% 3612 out of 3612
+    checks_failed......: 0.00%   0 out of 3612
+
+    ✓ status is 200
+    ✓ stale is false
+    ✓ days match the request
+
+    HTTP
+    http_req_duration...............: avg=5.49ms min=2.85ms med=4.32ms p(90)=5.83ms p(95)=6.44ms p(99)=8.11ms max=411.46ms
+      { expected_response:true }....: avg=5.49ms min=2.85ms med=4.32ms p(90)=5.83ms p(95)=6.44ms p(99)=8.11ms max=411.46ms
+      { scenario:fresh_forecast }...: avg=4.5ms  min=2.85ms med=4.32ms p(90)=5.8ms  p(95)=6.42ms p(99)=7.94ms max=11.55ms 
+    http_req_failed.................: 0.00%  0 out of 1204
+      { scenario:fresh_forecast }...: 0.00%  0 out of 1201
+    http_reqs.......................: 1204   9.309858/s
+
+    EXECUTION
+    dropped_iterations..............: 0      0/s
+      { scenario:fresh_forecast }...: 0      0/s
+    iteration_duration..............: avg=6.3ms  min=3.46ms med=5.06ms p(90)=6.85ms p(95)=7.61ms p(99)=9.63ms max=414.06ms
+    iterations......................: 1204   9.309858/s
+    vus.............................: 0      min=0         max=0
+    vus_max.........................: 8      min=8         max=8
+
+    NETWORK
+    data_received...................: 520 kB 4.0 kB/s
+    data_sent.......................: 130 kB 1.0 kB/s
+
+
+

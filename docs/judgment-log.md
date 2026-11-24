@@ -246,9 +246,739 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **Why:** "short" was the requirement; the reasons already live in the judgment log.
 - **Self-review (2 rounds) before sending:** numbers from perf/results.txt with their measurement conditions (a bare p95 reads like a promise for any load); no test count (goes stale); endpoint table derived from main.py; Python version from .python-version; explicit length limit; the load-test command needs a fresh seed and a running server because the script uses fixed seed ids.
 
+## Experiment – Ollama agent input
+
+### 43. Stray byte crashes the Ollama agent
+- **Found:** `printf 'exit\xd7\n' | uv run agent.py` raised `UnicodeEncodeError: '\udcd7' surrogates not allowed` in httpx when sending to Ollama. `.strip()` keeps the bad byte, so `"exit"` never matched.
+- **AI suggested:** three-part fix: `sys.stdin.reconfigure(errors="replace")`, compare `.strip().lower() == "exit"`, treat `EOFError` as exit.
+- **I decided:** harden input (replace bad bytes, strip, EOF = exit) instead of relying on an English keyboard during the demo.
+- **Why:** a bad byte should never crash a request, and the demo should not depend on the keyboard layout.
+- **Research:** Python docs: `TextIOWrapper.reconfigure()` (3.7+) can change `errors` on `sys.stdin`; `input()` raises `EOFError` at end of input.
+- **Non-obvious consequence:** `exit` followed by a stray byte no longer quits. It becomes `exit�` and goes to the model, which took about 3.5 minutes on this machine. Ctrl+D (EOF) still quits.
+
+## Step 10 – Irrigation volume (POST /v1/irrigation/volume)
+
+### 44. Volume formula
+- **AI suggested:** volume_l = area_m2 × depth_mm, with no efficiency factor.
+- **I decided:** keep area_m2 × depth_mm (1 mm on 1 m² = 1 L).
+- **Why:** 1 mm over 1 m² is exactly 1 litre, so no conversion constant is needed. The spec gives depth_mm directly. An efficiency factor (gross vs net depth) would be an extra input the spec does not ask for.
+- **Research:** arithmetic: 1 m² × 0.001 m = 0.001 m³ = 1 L. Web search (standard): calculator pages use volume = area × depth, e.g. [bighaat drip-irrigation guide](https://www.bighaat.com/kisan-vedika/blogs/how-to-calculate-water-requirement-for-drip-irrigation) and [WA DPIRD converting readily available water to litres](https://agric.wa.gov.au/spring/converting-readily-available-water-litres-drip-irrigation). I saw these in search results only; I did not open them in full.
+
+### 45. Field names and status code
+- **AI suggested:** request `area_m2`, `depth_mm`; response `{"volume_l": ...}`; status 200.
+- **I decided:** keep volume_l (unit-suffix style, like area_m2 / flow_lph).
+- **Why:** the course spec has no irrigation section, so the names are a choice. They follow the spec's unit-suffix style (`area_m2`, `flow_lph`, `available_water_mm_per_m`). Status 200, not 201: the call calculates and creates nothing.
+
+### 46. Input rules
+- **AI suggested:** `area_m2` > 0; `depth_mm` >= 0; unknown fields -> 422; reject Infinity.
+- **I decided:** keep depth_mm >= 0; 0 = no irrigation is a real value, not invalid input. Keep area_m2 > 0 (zero area is meaningless, same as plots). Keep rejecting unknown fields (a typo like depht_mm must fail loudly, not silently). Keep rejecting Infinity/NaN (no infinite water volume).
+- **Why:** `area_m2` > 0 matches the plot rule (FR-1.3). `depth_mm` = 0 is valid (no water). Unknown fields are rejected like the other request models (decision 17). Infinity: pydantic accepts it with `gt=0`. `allow_inf_nan=False` makes it a 422. Correction: a finite overflow (1e200 × 1e200) does not return 500; it returned 200 with `volume_l` null. Fixed in #48.
+- **Research:** checked in the venv: `Field(gt=0)` accepts `float('inf')`; with `allow_inf_nan=False` it is rejected. Before the flag, the two Infinity tests failed with `ValueError: Out of range float values are not JSON compliant`; after it, they pass. The test sends raw `Infinity` bytes, because httpx refuses to encode infinity.
+
+### 47. Found, not fixed: Infinity on POST /v1/plots
+- **AI found:** `PlotCreate.area_m2` has the same gap. Checked on a scratch copy of registry.db: POST returns 201 and stores the row; GET then returns `"area_m2": null`. The spacing fields and `PlotPatch` use the same `gt=0` and were not tested.
+- **I decided:** TODO (fix now, or log as a known gap)
+- **Why:** it is outside this task, and the task says no extras. Fixing it means adding `allow_inf_nan=False` to the plot models and a test per field.
+
+### 48. Finite inputs that overflow to infinity
+- **AI suggested:** check the product with `math.isfinite`; return 422 VALIDATION when it is not finite.
+- **I decided:** 422 VALIDATION, because the client sent values that cannot produce a real volume; it is a client error, not a server failure.
+- **Why:** `allow_inf_nan=False` checks only the inputs, and 1e200 × 1e200 has finite inputs. Without the check the endpoint returned 200 with `volume_l: null`, which breaks the float contract. Test: `test_overflowing_volume_is_rejected` (failed with 200 before the fix, passes after).
+
+### 49. Review finding 11: irrigation endpoint outside P1
+- **AI suggested:** remove the irrigation endpoint and models, because CLAUDE.md says no extras and the P1 spec does not list it.
+- **I decided:** rejected; keep the endpoint on this branch.
+- **Why:** this is the coding-agents tutorial exercise on its own branch, not part of P1.
+
+## Step 11 – DATABASE_URL: SQLite locally, PostgreSQL in production
+
+### 50. Driver layer (Q1)
+- **AI suggested:** B: `psycopg` for Postgres and `sqlite3` for SQLite, with a small adapter in `db.py`.
+- **I decided:** overrode it. SQLAlchemy Core, narrowed to a driver adapter: raw SQL via `text()` with named params, no ORM, no query builder, no models. Engine from `DATABASE_URL`, all inside `db.py`.
+- **Why:** SQLAlchemy wraps both drivers' errors in the same `IntegrityError` / `OperationalError`, so `errors.py` maps them once (requirement 1). A later MySQL move becomes a URL + driver change.
+- **Research:** none yet.
+
+### 51. Connection handling (Q2)
+- **AI suggested:** A: SQLite keeps `NullPool`; Postgres uses the default pool.
+- **I decided:** A, plus `pool_pre_ping=True` on Postgres.
+- **Why:** SQLite keeps today's behaviour exactly (PRAGMA in a connect event, `mode=rw`, `timeout=5`, same 503 path). `pool_pre_ping` detects a dropped Postgres connection instead of failing a request.
+
+### 52. Which failures return 503 (Q3)
+- **AI suggested:** A: any connection-level failure on Postgres -> 503, other errors -> 500.
+- **I decided:** A, plus lock timeout and deadlock. Rule: temporary DB problem -> 503 + `Retry-After: 30`; bug -> 500.
+- **Why:** retrying helps with the first group (cannot connect, timeout, disconnect, too many connections, row lock, deadlock) and does not help with a missing table or bad SQL. Each case is tested with a simulated error.
+
+### 53. Loading DATABASE_URL (Q4)
+- **AI suggested:** A: `python-dotenv`, default `sqlite:///registry.db` when unset.
+- **I decided:** A with two guards: log only the scheme at startup; `.env` git-ignored, only `.env.example` committed. A real environment variable wins (`override=False`).
+- **Why:** `.env` will hold a password. Tests set `DATABASE_URL` to a temp SQLite copy, never `registry.db`.
+- **Non-obvious consequence:** startup logging is an extra (CLAUDE.md says no logging); I asked for it.
+- **Superseded:** by #72. P2 requires pydantic-settings, so python-dotenv is removed.
+
+### 54. Proving it works on Postgres (Q5)
+- **AI suggested:** A: one manual throwaway check against Docker Postgres, no test code in the repo.
+- **I decided:** overrode it. B: the same test suite runs on Postgres when `TEST_DATABASE_URL` is set; skipped by default.
+- **Why:** grading is a live demo: the same suite passing on SQLite and then on Postgres is the proof for requirement 1. I start the Docker container myself; tests never start or stop it. The Postgres schema file is for tests/local only.
+
+### 55. Clean Postgres state per test (Q6)
+- **AI suggested:** A: drop and recreate the schema, then re-run one `seed_registry_pg.sql` before every test.
+- **I decided:** A, with a safety guard: refuse to run unless the host is localhost/127.0.0.1 and the database name contains "test". The guard has its own test.
+- **Why:** a wrong URL must never be able to wipe a real database.
+
+### 56. How tests choose the DB (Q7)
+- **AI suggested:** B: module-level `engine` in `db.py`, tests patch `db.engine`.
+- **I decided:** B. `conftest` sets `DATABASE_URL` to a temp SQLite file before `db.py` is imported. A test proves this holds even when `.env` points elsewhere.
+- **Why:** a local `.env` with a real URL must never be used by tests (the environment variable wins over `.env`).
+
+### 57. Type differences between databases (Q8)
+- **AI suggested:** C: translate the test schema to matching types now; add normalization only if needed.
+- **I decided:** C, after I asked the AI to check first. It found one real break: `update_plot` merges the stored row, then `date.fromisoformat()` fails on a `date` (500).
+- **Why:** the spec does not describe production column types, so I can't assume TEXT/REAL.
+
+### 58. Where to normalize (Q9)
+- **AI suggested:** A: normalize rows in `db.py`.
+- **I decided:** A: `date` -> `"YYYY-MM-DD"`, `Decimal` -> `float`. The Postgres test schema uses DATE and NUMERIC so the suite proves it, with a PATCH-without-`planting_date` test.
+- **Why:** all DB differences stay in `db.py`.
+
+### 59. Unique and foreign-key violations (Q10)
+- **AI suggested:** A: `db.py` raises its own `UniqueViolation`.
+- **I decided:** A (after weighing C: check only SQLSTATE 23505). Also `ForeignKeyViolation`, translated from SQLite messages or SQLSTATE 23505/23503. `main.py` changes only in type hints and those catches.
+- **Why:** driver details stay out of `main.py`. Delete-farm-with-plots and unknown catalogue ids must stay 409 / 422 on both databases, tested on both. A future MySQL (SQLSTATE 23000) maps into the same exceptions.
+
+### 60. Performance on both databases (Q11)
+- **AI suggested:** A: re-run k6 on SQLite only.
+- **I decided:** overrode it. B: same script, same thresholds, run on SQLite and on Docker Postgres; both p95 numbers recorded and labelled in `perf/results.txt`.
+- **Why:** production runs on Postgres, so NFR-1.1 must be measured there. If Postgres misses 100 ms, report it; do not tune the thresholds.
+
+### 61. A database error with no code counts as temporary (Task 4)
+- **AI suggested:** an `OperationalError` that has no SQLSTATE and no `sqlite_errorname` returns 503 + `Retry-After: 30`.
+- **I decided:** accepted.
+- **Why:** psycopg client-side failures (connection refused, DNS error, connect timeout) arrive without a SQLSTATE, and the rule is "temporary problem -> 503, bug -> 500". Bad SQL and a missing table come as `ProgrammingError` (SQLite: `SQLITE_ERROR`), so they still return 500.
+- **Non-obvious consequence:** any other code-less `OperationalError` is also treated as temporary. On Python older than 3.11 SQLite has no `sqlite_errorname`, so every SQLite `OperationalError` would become 503; the project is on 3.12.
+
+### 62. Performance failed after the change: profile, don't tune (Task 8)
+- **AI suggested:** profile before touching anything; hypotheses 1-4 below, then the smallest fix.
+- **I decided:** profile, not tune. Thresholds and the k6 script stay as they are.
+- **First (failing) numbers, 2026-11-10:** SQLite p95 67.6 / 71.8 / 70.8 / 68.7 ms with 9 / 9 / 10 / 11 dropped iterations (max 1.95 s); PostgreSQL p95 207.3 / 184.4 / 164.0 / 169.0 ms with 3 dropped per scenario. Raw output: `docs/perf-noisy-runs-2026-11-10.txt`. A first comparison with the old code gave 32-36 ms, which looked like a real regression.
+- **Investigation:**
+
+| Hypothesis | Measured | Confirmed? |
+|---|---|---|
+| Pool queueing (default pool 5+10 vs threadpool) | Postgres pool 20+20: p95 75 vs 81 ms (a repeat of the current code gave 71); about 1-2 connections in use at 40 rps | No |
+| `pool_pre_ping` round trip | off: 69 vs 81 ms; repeat of current 71 (within noise) | No |
+| SQLite NullPool connect + PRAGMA event | +0.9 ms per request in-process (1.28 vs 0.39 ms); A/B on SQLite new 38-69 ms vs old 27-58 ms, 0 dropped | No |
+| Other (engine per request, access log) | engine built once at import; access log on/off made no difference | No |
+
+- **Conclusion: host drift, not the code.** Back-to-back runs of the same old code went from p95 27 ms to 58 ms, and its server CPU time for the same work from 39 s to 78 s, within one session. My first old-code run was just taken at a quiet moment.
+- **Clean rerun (nothing else running, old / new SQLite / new PostgreSQL back-to-back):** all thresholds pass. p95 farms list / by id / plots list / plot by id: old 32.2 / 32.9 / 33.1 / 35.6; new SQLite 28.2 / 29.1 / 29.0 / 30.6; new PostgreSQL 35.9 / 36.8 / 36.6 / 37.4 ms; 0 dropped. Details in `perf/results.txt`.
+- **Non-obvious:** a failing k6 run on this machine is not evidence by itself. Compare against the old code back-to-back before blaming a change.
+
+### 63. Test guard: query string and libpq variables (final review)
+- **AI suggested:** the final review found that `?host=`, `?hostaddr=` and `?dbname=` in `TEST_DATABASE_URL` pass the guard but connect elsewhere (I reproduced all three), and that `PGHOST` etc. do the same. Refuse any query string, and refuse to run when `PGHOST`, `PGHOSTADDR`, `PGSERVICE` or `PGDATABASE` is set.
+- **I decided:** accepted; I rated the environment bypass as data-loss risk, not minor. Red first: 7 new tests failed, then passed.
+- **Non-obvious consequence:** a legitimate `?sslmode=...` on the test URL is now refused too. Tests only run against local Docker, so this is fine.
+
+### 64. Assumed Postgres constraint name (final review)
+- **AI suggested / I decided:** accepted. The plot-name 409 on Postgres matches SQLSTATE 23505 plus the constraint name `plots_farm_id_name_key` (Postgres's default for `UNIQUE (farm_id, name)`). It is an assumption: the production schema is unseen.
+- **Cost if wrong:** a race on two plots with the same name in one farm gives 500 instead of 409. The normal path (checked in code first) is unaffected. Check `\d plots` in production before relying on it.
+
+### 65. Minor review findings, deferred (final review)
+- NUL byte (`\u0000`) in a farm id or name: SQLite accepts it (404/201), psycopg raises DataError and the API answers 500. Not verified live. Deferred.
+- A `.env` that sets `TEST_DATABASE_URL` switches the tests to Postgres mode (`load_dotenv` runs before conftest reads it). The guard still applies. Deferred.
+- `.env.example` uses `sqlite:///registry.db` (relative to the working directory); the default when unset is next to `db.py`. They agree only from `services/registry-service`. Deferred.
+- `connection_invalidated` -> 503 is not documented in the README. Deferred.
+- UUID id columns in production are untested (rows are normalized to str, but never run on real UUID columns). Deferred.
+- README Postgres section lacks "run from services/registry-service". Deferred.
+- `docs/perf-noisy-runs-2026-11-10.txt` is untracked: commit it, or judgment-log #62 points to nothing.
+- `CLAUDE.md` had no trailing newline. Deferred.
+
+
+### 66. Project skill `registry-api`
+- **AI suggested:** a project skill at `services/registry-service/.claude/skills/registry-api/SKILL.md` that encodes the API conventions (/v1, bare-array lists, spec-only fields, PATCH semantics, problem+json codes, tests per failure, run pytest, ask when the spec is silent, never touch registry.db), each with a "Why" and an example error body.
+- **I decided:** accepted. Skipped the skill-creator eval loop (subagent test runs): the rules are checklist-style and the existing test suite already enforces most of them.
+- **Why:** the conventions live in my head and CLAUDE.md; a skill loads them only when working on routes, so they apply consistently.
+- **Research:** read `errors.py` to copy the real error body shape. Non-obvious: `errors.py` returns code `UNAVAILABLE` with status 500 for unexpected errors, which is outside the four codes listed in the skill. Not changed, flagged for my decision.
+- **Follow-up (review of the skill):** AI suggested the split of /v1 and lists into two rules, rule 9 (registry.db), the spec URL in the "ask" rule, and the 405 / bad JSON reminder. I decided to merge the split back and keep the other three. Why: one rule per topic as I gave it; the other three match P1 behavior and invent nothing new.
+
+### 67. GET /v1/farms/{id}/area (outside the P1 spec)
+- **AI suggested:** the P1 spec has no area endpoint (16 routes, only the plot field `area_m2`), so flag it as beyond scope and ask for the contract instead of inventing one. Proposed body `{"farm_id", "total_area_m2"}`, 200 with 0 for a farm with no plots, 404 NOT_FOUND for an unknown farm, sum done in SQL (`COALESCE(SUM(area_m2), 0)`) in `db.py`.
+- **I decided:** add it anyway, at my request. Accepted the `farm_id` + `total_area_m2` body and "no plots -> 200 with 0".
+- **Why:** echoing `farm_id` makes the response self-describing; the `_m2` suffix matches `area_m2`. A farm with no plots exists and has area 0, so 404 stays reserved for an unknown id (skill rule 1).
+- **Research:** read the spec (endpoint table, FR-1.3, seed table: unit is m²) and the seed data (demo farm 1000 + 800 = 1800, used in the test). Tests: success, empty farm, unknown id (404), missing DB (503 + Retry-After).
+
+### 68. Evals for the registry-api skill (written, not run)
+- **AI suggested:** four prompts: plot count per farm, plots per crop, PATCH plot location, and one negative prompt that must not load the skill ("What does available_water_mm_per_m mean?"). Three runs per prompt with and without the skill: 24 runs. Most checks are commands (curl, sqlite3, pytest, transcript grep). An LLM judge only where meaning matters: the wording of the answer, and whether spec-silent choices were stated.
+- **I decided:** accepted the four prompts and 3 runs per config. Two changes from the skill-creator default: one `evals/evals.json` as you asked (its reference asks for one folder per case), and each expectation is an object with `type: code|judge`, not a string.
+- **Why:** you asked for one file and for each check to be marked. Everything else keeps the old evals.json shape.
+- **Decisions that are mine, not from your prompt list:** (a) unknown crop returns 404 NOT_FOUND, from the skill's rule for unknown ids. (b) PATCH location: `lat: null` and `{}` return 422, and an unknown field returns 422, from the project's PATCH and request-model rules. (c) The count and PATCH response shapes are not fixed. The count check accepts a bare number or a single-key object, and a judge checks that the shape was stated as a decision. Why: the spec is silent, and skill rule 7 says ask rather than invent.
+- **Research:** the seed has no crop without plots, so every run's copy gets a `cucumber` crop with no plots. Non-obvious: `errors.py` maps 405 to code `VALIDATION`, so the wrong-method check expects VALIDATION, not a new code. Runs use a copy outside the repo, so the repo CLAUDE.md is not loaded in either config. The real `registry.db` is guarded by `stat` (size, mtime), not by reading it. Not verified yet: the agent command has not been run; the `claude` flags were checked against `claude --help`.
+- Extends #66, which skipped the skill-creator eval loop. The loop itself is not run yet.
+- **Later decision (drop the eval-4 judge):** I decided to drop the eval-4 judge (e4-3). Why: eval 4 tests that the skill does not load; answer quality is not the skill's job. Kept the judges in evals 1 and 3, because "asked or stated a spec-silent decision" cannot be checked by a command.
+- **Later decision (edit permissions for headless runs):** AI suggested bypass mode or settings allow rules. I decided per-run `--allowedTools` scoped to each run's copy under `/tmp/registry-evals/<run-id>/` (Edit and Write path rules, Bash limited to `.venv/bin/python` and `curl`). Why: least privilege, no permanent settings change, and headless mode denies edits under `.claude` paths.
+- **Later decision (full contract in prompts, no judges):** AI found the agent asks instead of building when the prompt is spec-silent. I decided to put the full contract in prompts 1-3 (count shape and 0 for no plots, crop and plot must exist, ordered by id, same fields as GET) and drop the judges (e1-7, e3-13), so every check is code. This supersedes decision (c). Why: evals should measure the conventions the skill teaches, and rule 7 (ask when silent) was already seen working in exercise 1.
+- **Environment:** moved Claude Code into WSL, since the Windows build denies scoped edits on `\\wsl.localhost` paths.
+- **Result:** 100% vs 100% (24 of 24 runs; every check passed in both configs). The skill shows no measurable effect, because the existing code (errors.py, get_farm_or_404, tests/) already teaches the conventions. I decided to stop here and document it. Next I would test a new empty service or a smaller model, where the skill should matter. Details in `services/registry-service/.claude/skills/registry-api/evals/results.md`.
+
+## Step 12 – P2 global configuration (pydantic-settings)
+
+### 69. Required DATABASE_URL, refuse to start (P2 decision 2)
+- **AI suggested:** none. The decision came from the owner's P2 instructions and was implemented as given.
+- **I decided:** `DATABASE_URL` is required, with no default. Its scheme must be `sqlite` or `postgresql`, with an optional `+driver`. A missing or bad value stops startup; the message names `DATABASE_URL` and never prints a value.
+- **Why:** the old default (`registry.db` next to `db.py`) could hide a missing setting: production would quietly open a local file. Failing at startup beats a 500 on the first request.
+- **Research:** pydantic's `ValidationError` text includes the rejected value, so `config.load_settings` builds its own message and raises with `from None`. Checked: a child process with `mysql://u:secret@h/db` exits 1 and prints no `secret`; removing `from None` in a scratch copy made that test fail. On temp copies: missing URL and bad scheme refuse to start; with Postgres unreachable the service starts and `/health` answers 503 with `Retry-After: 30`.
+
+### 70. Owner URL and two database roles (P2 decision 3)
+- **AI suggested:** none, as #69.
+- **I decided:** optional `DATABASE_OWNER_URL` with the same scheme check. Two Postgres roles: `registry_owner` creates and owns the tables (setup/seed command and Postgres tests only); `registry_app` gets only SELECT, INSERT, UPDATE and DELETE on them (the API's login). Nothing in `db.py` reads the owner URL.
+- **Why:** least privilege. Without ownership or DDL rights, a bug in the API cannot drop a table or change the schema.
+- **Research:** not run against Postgres yet. The roles and grants do not exist; the setup command that creates them is future work. The grant list is the design and must be checked when that command is written.
+
+### 71. Secrets as SecretStr (P2 decision 4)
+- **AI suggested:** none, as #69.
+- **I decided:** both URLs are `SecretStr`. The real value is read only in `db.py`, with `.get_secret_value()`, where the engine is created.
+- **Why:** `repr`, `str` and `model_dump_json` show `**********`, so a printed or logged settings object does not leak a password.
+- **Research:** `test_repr_and_dumps_hide_the_passwords` checks repr, str and model_dump_json for both URLs.
+
+### 72. .env path next to config.py (P2 decision 5)
+- **AI suggested:** none, as #69.
+- **I decided:** `ENV_FILE = Path(__file__).resolve().parent / ".env"`. Real environment variables still beat the file. `python-dotenv` is removed from `db.py`; this supersedes #53.
+- **Why:** a relative `.env` is found only when the process starts in the right folder. The absolute path works from any working directory, in the debugger and in pytest.
+- **Research:** tests pass a temp file to `load_settings(env_file=...)`, so they never depend on the real `.env`. Covered: env var beats file, file used when no env var, `ENV_FILE` is absolute and next to `config.py`. Not solved here: a relative path inside the URL (`sqlite:///registry.db`) still resolves against the working directory. Solved in #73.
+
+### 73. Relative SQLite paths resolve to the service folder
+- **AI suggested:** none. Options weighed: an absolute path in `.env` (works on one machine only); reject relative paths (one more manual step for every setup); document "run from the service folder" (easy to forget, and the cause of this bug).
+- **I decided:** a relative SQLite file (`sqlite:///registry.db`) resolves against `services/registry-service`, the folder of `config.py`, not the working directory. Absolute paths, `:memory:` and PostgreSQL URLs are unchanged.
+- **Why:** the folder is fixed, so the same `.env` works whether uvicorn, pytest or a debugger starts in another directory. Without it, a service started from the repo root opens a different file or answers 503 on every request.
+- **Research:** Django's tutorial (3.2, part 2) sets SQLite `NAME` to `BASE_DIR / 'db.sqlite3'` and says the file goes in the project directory: https://docs.djangoproject.com/en/3.2/intro/tutorial02/ . The `BASE_DIR` line itself comes from the project template and is not in that snippet; not re-checked. Checked here: a child process started in a temp folder with `sqlite:///registry.db` prints the service-folder path; absolute, `:memory:` and PostgreSQL values are unchanged (`tests/test_config.py`).
+
+### 74. /health returns 503 when the schema is missing
+- **AI suggested:** none for the status code. Option weighed: a bare `SELECT 1` ping, rejected because it reports healthy while every request fails on a missing table.
+- **I decided:** `/health` runs its farms-table check in `db.py` (`check_farms_table`). A reachable database without the `farms` table answers 503 `UNAVAILABLE`, `Retry-After: 30`, detail "Database schema is missing: no farms table". Connection failures keep the 503 "Database unavailable". Other errors keep 500.
+- **Why:** the service is up but not ready, the same case as a database that is down, so the same retry rule applies. Answering 200 would tell a load balancer to send traffic. A code bug stays 500.
+- **Research:** a missing table is SQLSTATE 42P01 (`undefined_table`) in Postgres, from the PostgreSQL error-code appendix. SQLite says "no such table" with no SQLSTATE. Tested on SQLite (`test_health_on_db_without_tables_is_503_schema_missing`); the Postgres branch is not run against a live database.
+
+### 75. The catch-all handler logs the traceback
+- **AI suggested:** none. Found by use: a 500 with no log to diagnose it.
+- **I decided:** the catch-all Exception handler logs the full traceback, with method and path, then returns the same 500 body. The non-temporary DB-error branch (also a 500) logs too, because it is the same silent case. The client body is unchanged.
+- **Why:** a 500 nobody can trace is not diagnosable. Logging server-side keeps the client body generic.
+- **Research:** the root logger has no handler, so ERROR records reach Python's last-resort stderr handler. uvicorn's default logging config configures its own loggers, not the root (from memory, not re-checked). Tests: caplog must show the traceback; the password must not appear in any log, response or record (this guard passed before and after, since nothing logs the URL).
+
+## Step 13 – P2 setup command (FR-2.2)
+
+### 76. Setup as a Python script with SQLAlchemy, not psql or Alembic
+- **AI suggested:** a Python setup script via SQLAlchemy.
+- **I decided:** `services/registry-service/setup_db.py`, run as `uv run python setup_db.py`. All of its DB work goes through SQLAlchemy Core. It is the only DB code outside `db.py` (CLAUDE.md updated).
+- **Why:** psql with a `.sql` file bypasses SQLAlchemy, needs a URL conversion, and keeps a second copy of the seed data. Alembic is more tooling than a schema that does not change yet. A `[project.scripts]` short command needs a build system, so it was rejected.
+
+### 77. Idempotent: create what is missing, insert what is missing
+- **I decided:** `create_all(checkfirst=True)`, then `INSERT ... ON CONFLICT (id) DO NOTHING` on both PostgreSQL and SQLite. Nothing is deleted or overwritten.
+- **Why:** a second run changes nothing. Keying on `id` means a name clash with another id (`UNIQUE(farm_id, name)`) still fails, instead of being skipped silently.
+
+### 78. All or nothing, including the tables
+- **I decided:** one transaction. On SQLite, `CREATE TABLE` commits by itself under Python's default sqlite3 mode, so `setup_db.py` turns that off and lets SQLAlchemy's begin event issue `BEGIN`.
+- **Why:** the first version left five empty tables after a forced failure; `test_failure_in_the_middle_saves_nothing` caught it. PostgreSQL already runs DDL inside a transaction.
+
+### 79. Row counts printed, not checked against 15
+- **I decided:** print the count per table and the total. A failed run exits 1 with one line, no traceback.
+- **Why:** after the API adds farms and plots, a rerun has more than 15 rows, and a fixed check would fail a valid run. The test checks the 15 on an empty database.
+
+### 80. Same schema as seed_registry.sh, with one difference
+- **I decided:** the same tables, columns, foreign keys and `UNIQUE(farm_id, name)`. Reals are `REAL` on SQLite and `FLOAT` (double precision) on PostgreSQL. `planting_date` is `TEXT` on both; the old `seed_registry_pg.sql` used `DATE` and `NUMERIC` lat/lon, which are gone.
+- **Why:** one definition for both databases, with the same logical types as the SQLite seed.
+- **Difference:** primary-key columns are NOT NULL. The SQLite seed allows NULL in a `TEXT PRIMARY KEY` (a SQLite quirk); PostgreSQL always enforces NOT NULL on a primary key.
+- **Research:** `PRAGMA table_info`, `foreign_key_list` and `index_list` on a copy of the seed vs the setup output: identical except the primary-key NOT NULL. The PostgreSQL DDL was compiled offline, not run.
+
+### 81. The seed rows are typed twice, so a test compares them
+- **I decided:** `test_same_rows_as_seed_registry_sh` runs `seed_registry.sh` in a temp folder and compares every row and column name with `setup_db.py`'s output.
+- **Why:** the 15 rows live in the SQL script and in Python. The test fails when one changes without the other.
+
+### 82. The Postgres test suite is seeded by setup_db
+- **I decided:** `tests/conftest.py` calls `run_setup` after dropping `public`. `seed_registry_pg.sql` is deleted.
+- **Why:** one seed path for tests, the perf database and production. Not run here: the Postgres suite needs a live test database, and the owner runs that.
+
+### 83. A missing owner URL is tested with an empty value
+- **I decided:** the subprocess test sets `DATABASE_OWNER_URL=""`, not unset.
+- **Why:** an unset variable would let pydantic-settings read the real `.env`, so the test could reach the real database. An empty value overrides the file, and `config.py` reads it as "not set". The test checks the exit code, that the message names the variable, and that the password from `DATABASE_URL` never appears in the output.
+
+## Step 14 – Postgres test database (registry_test)
+
+### 84. The Postgres tests use a separate registry_test database
+- **AI suggested:** a separate `registry_test` database. Options weighed: Testcontainers (needs Docker and a new package) and per-test rollback (our tests use several connections and commit, so a rollback cannot undo them).
+- **I decided:** `registry_test`, owned by `registry_owner`, the same owner as `registry`. No third role.
+- **Why:** the suite wipes the schema before every test. A separate database keeps that away from `registry`, and needs neither Docker nor a new package.
+
+### 85. The test database name must end with _test
+- **I decided:** `TEST_DATABASE_URL`'s database name must end with `_test` and differ from `DATABASE_URL`'s name. The run stops with exit code 2 in `pytest_configure`, before any database is touched. The message states the rule and never the URL.
+- **Why:** the name alone does not catch a URL that ends in `_test` but points at the app's database; the comparison does. Like Django's `test_` prefix, the name marks the database as a test one.
+- **Research:** Django's test runner creates its test database with a `test_` prefix by default (from memory, not re-checked). Tests: `tests/test_pg_guard.py` (rejects `registry`, `test_registry`, `registry_testing` and the same database as the app; accepts `registry_test`); one subprocess run checks exit code 2 and that the password is not printed.
+
+### 86. TEST_DATABASE_URL in .env, read through config
+- **I decided:** the tests read `TEST_DATABASE_URL` from `config.py`, so `.env` works, and a real environment variable overrides it. An empty value means unset: `TEST_DATABASE_URL= uv run pytest` skips PostgreSQL for one run.
+- **Why:** no password is typed on the command line or kept in shell history. The same rule as `DATABASE_OWNER_URL`.
+- **Limit:** without a `DATABASE_URL` (in `.env` or the environment) the tests cannot read `TEST_DATABASE_URL`, so they run on SQLite and skip PostgreSQL.
+- **Research:** `tests/test_config.py` covers unset, empty, `.env` and env-beats-file for the new variable.
+
+### 87. Settings load on first use, not at import
+- **I decided:** `config.py` loads settings in `get_settings()`, on first use. The module no longer loads at import.
+- **Why:** conftest must read the real `DATABASE_URL` before it overrides it for the tests. An import-time load would have already read the override. The app still fails at startup: `db.py` calls `get_settings()` when it is imported.
+- **Research:** `setup_db.py` and `db.py` use the same function. One test narrowed: the subprocess check for a bad URL now matches the credentials (`u:secret`), because the traceback shows a source line that contains `get_secret_value`.
+
+## Step 15 – Startup check and backlog
+
+### 88. Fail-fast at startup still holds with lazy settings
+- **I decided:** no code change. The service still refuses to start with a missing or bad `DATABASE_URL`.
+- **Why:** `main.py` imports `db` at the top, and `db.py` calls `get_settings()` at import. So `uvicorn main:app` loads and validates the settings before it serves a request.
+- **Research:** ran `uvicorn main:app` from a temp copy of the code files (no `.env` copied). `DATABASE_URL` unset: exit 1, "DATABASE_URL: missing". Bad scheme: exit 1, the scheme rule, and the password does not appear. Valid SQLite control: "Application startup complete". The existing test `test_service_refuses_to_start_with_a_bad_url_and_does_not_print_it` covers the same path through `import db`.
+
+### 89. Feature ideas outside the task go to a README Backlog
+- **AI suggested:** none. The instructor's rule.
+- **I decided:** the root `README.md` has a "## Backlog" section. Each idea is one bullet: what it is and what it needs. Nothing is implemented.
+- **Why:** the instructor's rule. It keeps the P2 scope fixed and keeps the ideas in one place.
+
+## Step 16 – PostgreSQL performance (NFR-2.2)
+
+### 90. p95 on PostgreSQL is about 58 ms (2026-11-17)
+- **AI suggested:** the cause is a new database connection per request. A PostgreSQL connect plus SCRAM login costs far more than SQLite's, which is almost free.
+- **Checked in code:** this does not fit `db.py`. PostgreSQL uses SQLAlchemy's default pool with `pool_pre_ping=True`, so connections are reused; only SQLite uses `NullPool` (one connection per request). Entry 62 already measured the pool (1-2 connections in use at 40 rps) and `pool_pre_ping` (no effect). Not measured again in this step.
+- **I decided:** keep the code as is for now (well under the 100 ms target). Add a connection pool in `db.py` at the end of P2 and re-measure.
+- **Correction (open):** the pool already exists, so this decision needs a different cause first. Next step: run SQLite and PostgreSQL back-to-back in one session, on the same seeded data, to separate host drift from the database cost.
+- **Why:** one run on another day (2026-11-17) is not comparable to the SQLite runs of 2026-11-03 and 2026-11-10. Entry 62 shows a same-code run going from 27 to 58 ms within one session, so the gap may be host drift, not PostgreSQL.
+- **Research:** from memory, not re-checked online: SQLAlchemy 2.0 uses QueuePool for non-SQLite engines by default; `pool_pre_ping` sends a `SELECT 1` on each checkout.
+
+## Step 17 – weather-service (FR-2.3 to FR-2.8)
+
+### 91. Rain is rain_sum + showers_sum
+- **AI suggested:** rounding the sum to 2 decimals. The rule itself is the owner's.
+- **I decided:** `rain_mm = rain_sum + showers_sum`: liquid water only, no snow.
+- **Why:** `precipitation_sum` counts snowfall, and in a system for the whole world snow does not reach the soil that day. `rain_sum` alone misses showers, which matter in warm climates. The rounding removes float noise (`0.2 + 0.1`) and loses nothing: the provider's values have 1 or 2 decimals.
+- **Research:** Open-Meteo docs (read 2026-11-17): hourly `rain` is "rain from large scale weather systems", `showers` is "showers from convective precipitation", `precipitation` is "rain, showers, snow". One real call (2026-11-18, Israel): `showers_sum` was 0.15 mm on a day with `rain_sum` 0.0, so `rain_sum` does not contain the showers and the sum does not count them twice. Test: `tests/test_provider.py` (`precipitation_sum` and `snowfall_sum` in the body are ignored).
+
+### 92. timezone=auto, precipitation_unit=mm, and every response validated
+- **AI suggested:** to find "today at the point" when a cached forecast is served later, use the `utc_offset_seconds` that comes with the forecast. No time zone database and no new package. It can be one hour off around local midnight on the two days a year when the clocks change (no test covers that).
+- **I decided:** always send `timezone=auto` and `precipitation_unit=mm`. Check every response. A timeout, a non-2xx status, a body that is not JSON, a missing field, any null, a value that is not a number or is negative, a unit that is not `mm`, lists of different length, a wrong number of days, dates that are not consecutive: all are a provider failure.
+- **Why:** `timezone=auto` gives local days anywhere in the world, so "today" is the grower's today. A forecast of zeros reads as "no water needed", the worst bug in the system (FR-2.8), so nothing is guessed.
+- **Research:** Open-Meteo docs: `timezone=auto` "resolves the time zone from the coordinates" and sets the daily boundaries. One real call (2026-11-18): the answer starts on the local date (2026-11-18, fetched at 00:04 in Israel), `utc_offset_seconds` is 7200, all three units are `mm`, every list has 8 values, and the answer passed the validation. Tests: 87 in `tests/test_provider.py`, one for each kind of bad answer and each field. A mutation check (null as zero, `true` as 1 mm, no unit check) made them fail.
+
+### 93. Always fetch 8 days, slice per request
+- **AI suggested:** none. The owner decided this before the build.
+- **I decided:** every fetch asks for 8 days (`FORECAST_FETCH_DAYS`). Each request gets `days` days cut from today at the point.
+- **Why:** one forecast per cell serves any `days` from 1 to 7. A forecast up to 24 h old still covers today + 7 days, even after a local midnight.
+- **Research:** the config refuses a value under 7. A forecast that does not cover today + `days` is never served, fresh or stale: with 7 days fetched, the service fetches again after local midnight (`test_a_fresh_forecast_that_no_longer_covers_the_days_is_fetched_again`).
+
+### 94. The grid: floor with epsilon, whole-number key, cell centre, clamp
+- **AI suggested:** none for the grid. The AI checked the epsilon premise (see Research).
+- **I decided:** key = `(floor(lat * 10 + 1e-9), floor(lon * 10 + 1e-9))` as whole numbers. The provider is asked about the cell centre, `(key + 0.5) / 10`, clamped to [-90, 90] and [-180, 180].
+- **Why:** whole numbers are safe dict keys. The centre stands for the whole cell. The clamp is needed because the cell that starts at lat 90 or lon 180 has its middle outside the globe.
+- **Research:** checked with a script (2026-11-18): `31.3 * 10` is exactly `313.0` in Python, and typed one-decimal values never land in the wrong cell. The epsilon is needed for computed coordinates: `0.1` added 8 times is `0.7999999999999999`, `-898 * 0.1` is `-89.80000000000001`. Without the epsilon 417 of the 3601 values `k * 0.1` (k from -1800 to 1800) fall one cell too low; with it none. Tests: `tests/test_grid.py` (26). With the epsilon switched off, exactly the four float-error tests fail.
+
+### 95. Max stale age 24 h, and a stronger warning in the frontend after 6 h
+- **AI suggested:** none. The owner decided this before the build.
+- **I decided:** a forecast of 24 h or older is never served, not even as stale: 503. The frontend (later) shows the forecast's age from `fetched_at` and warns more strongly when it is older than 6 h.
+- **Why:** a forecast one day old is, for any day, a forecast with one more day of lead. In the study a day of lead costs about 0.04 mm/day of error, little next to the 0.7 to 0.95 mm/day already accepted. Older than that, the forecast no longer covers day 7.
+- **Research:** UC Davis (eScholarship), ET0 forecasts from the National Blend of Models: RMSE 0.70 / 0.79 / 0.95 mm/day at 1 / 3 / 7 days ahead, https://escholarship.org/uc/item/6sb9r80k. A web search matched the owner's numbers to this paper, but only the abstract text came back: fetching the page returned nothing, so the full paper was not read. "About 0.04 mm/day per day of lead" is the AI's own arithmetic on the three numbers, not a result of the study.
+
+### 96. Retries: jittered backoff, 1.5 s per attempt, 4 s in total
+- **AI suggested:** two details inside the owner's rule. (1) Each attempt is also cut off with `asyncio.timeout`, because httpx's timeouts are per step: a provider that sends one byte at a time could hold an attempt for ever. (2) "A meaningful timeout" is half of `PROVIDER_TIMEOUT_S` (0.75 s): a retry that cannot get that after its wait is not started, and the last attempt gets only the time that is left.
+- **I decided:** 2 retries (3 attempts), 1.5 s per attempt, a wait of random(0, 0.2 s × 2^n) before retry n (full jitter), 4 s for everything. The budget is checked before every attempt.
+- **Why:** the grower waits about 5 s at most, so one fetch must end in under 4 s. Jitter keeps the retries of many callers from landing together.
+- **Research:** AWS Builders' Library, "Timeouts, retries, and backoff with jitter" (Marc Brooker): https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/. It also says client errors (4xx) are not worth retrying. The owner's rule retries every failure, so a 4xx is called 3 times; the budget bounds the cost. Open question, not changed. Tests: `tests/test_provider_retries.py` (18): the cut-off, and the 3.2 s and 4.0 s timelines.
+
+### 97. One retry point
+- **AI suggested:** none. The owner decided this before the build.
+- **I decided:** `weather-service` is the only place in the chain that retries. `planner-service` calls it once, without retries, with a timeout a bit above 4 s.
+- **Why:** retries on several layers multiply: 3 attempts in 3 layers is 27 calls to the provider for one request, and the grower waits for all of them.
+- **Research:** the same AWS article calls retries "selfish" and warns that they multiply across layers (the second point from memory, not re-checked). The rule is written in `CLAUDE.md` and in the service README.
+
+### 98. Single-flight, and one outcome for every waiter
+- **AI suggested:** `asyncio.shield` around the shared call, so a caller that hangs up does not cancel the call the others wait for. A done-callback marks the task's exception as read, so no "exception was never retrieved" warning is printed.
+- **I decided:** concurrent requests for one cell share one provider call (one asyncio task per cell). All of them get its outcome (fresh, stale or 503). A waiter never starts retries of its own.
+- **Why:** when a forecast expires, many requests arrive together. Without sharing, 20 requests are 20 provider calls, and on a failure 20 × 3.
+- **Research:** tests: 20 concurrent requests make 1 provider call (3 on a failure: one call and its two retries), at service level (deterministic) and over HTTP (threads). A mutation check without `shield`, or without the sharing, made them fail.
+
+### 99. 30 s failure cooldown and Retry-After
+- **AI suggested:** none. The owner decided this before the build.
+- **I decided:** after a cell failed (all retries), the provider is not called for that cell for 30 s: the answer is stale or 503 at once. The 503 has `Retry-After` = the seconds left of the cooldown, or the whole cooldown if the cell has none.
+- **Why:** a down provider would make every request wait the whole 4 s and call it 3 times. `Retry-After` tells the caller when trying again can work.
+- **Research:** `Retry-After` is a number of seconds (RFC 9110, section 10.2.3; from memory, not re-checked). Tests: 12 s into the cooldown the 503 says 18; 29 s says 1; at 30 s the provider is called again. The cooldown is per cell.
+
+### 100. Stale-while-revalidate rejected
+- **AI suggested:** none. Considered and rejected by the owner: serve the old forecast at once after 3 h and refresh it in the background.
+- **I decided:** rejected. After 3 h the next request calls the provider and waits for the answer.
+- **Why:** it conflicts with FR-2.5 (a forecast is fresh for 3 h, then the provider is called) and FR-2.6 (`stale: true` means the provider failed). A background refresh would hand out a forecast older than 3 h as if it were fine, or need a third state.
+- **Research:** none.
+
+### 101. One LRU dict with two clocks
+- **AI suggested:** none. The owner decided this before the build.
+- **I decided:** one `OrderedDict`: cell → forecast with its `fetched_at`. `fetched_at` (it changes only on a new provider call) decides if a forecast is fresh. The order (a request moves its cell to the end) decides which cell goes first when the 10,000 cells are full. Cells older than 24 h are deleted when a new forecast is stored and when their own cell is requested.
+- **Why:** two lists (by age, by use) must be kept in step; one dict cannot disagree with itself.
+- **Research:** tests: the least recently requested cell is evicted and a request moves its cell to the end (without that, the oldest fetch would go); the cache never holds more than the cap; expired cells are deleted (the last two read `_cache`, the only tests that look inside).
+
+### 102. Observer/notifications rejected, in the backlog
+- **AI suggested:** none. Considered and rejected by the owner: an Observer that tells the grower when a new forecast changes the plan.
+- **I decided:** not built. The idea is one line in the root README Backlog.
+- **Why:** everything is request/response today, and nothing in the spec needs a push.
+- **Research:** none.
+
+## Step 18 – weather-service retry policy and logs
+
+### 103. Retry only transient failures
+- **AI suggested:** none. The owner decided this after the first build, where every failure was retried (entry 96 left it open).
+- **I decided:** retry timeouts, connection errors, HTTP 408, 429, 500, 502, 503, 504 and a `200` with an invalid body (not JSON, missing field, null, wrong unit, short days; FR-2.6). Any other status (400, 401, 403, 404, 422 ...) is not retried: one call, then stale or 503.
+- **Why:** a bad request can never succeed by repeating it, and every retry is a useless call to the provider. A bad `200` body stays retryable because the next answer is often fine.
+- **Research:** the AWS Builders' Library article already read for entry 96 says client errors (4xx) are not worth retrying. 408 and 429 are the 4xx that mean "try again later". Tests: `tests/test_provider_retries.py` (400, 401, 403, 404, 422 give 1 call; 408, 429, 500, 502, 503, 504, timeout, connection error and invalid bodies give 3).
+
+### 104. Honour the provider's Retry-After to extend the cooldown
+- **AI suggested:** accept the header as seconds or as an HTTP date; an unreadable value is ignored (normal retry rules). The wait is `max(jitter, Retry-After)` when it fits in the budget.
+- **I decided:** on 429 and 503, a `Retry-After` longer than the time left in the 4 s budget means no wait: stop and fall back now. The cell's cooldown becomes `max(FAILURE_COOLDOWN_S, Retry-After)`, capped at `MAX_STALE_S`. Our own 503 `Retry-After` is the remaining cooldown.
+- **Why:** the provider told us when it will accept calls again. Calling earlier gets another 429 and may extend the block. The cap keeps a huge or wrong value from silencing a cell for ever.
+- **Research:** `Retry-After` is seconds or an HTTP date (RFC 9110, section 10.2.3; from memory, not re-checked). Tests: 429 with `Retry-After: 120` gives 1 call and no wait, no provider call at 60 s, a call allowed at 120 s, and our 503 says 120 then 60; an HTTP date is parsed; `999999999` is capped to 86400; a value under 30 does not shorten the cooldown.
+
+### 105. Log every failed attempt and the final outcome
+- **AI suggested:** the tests found that httpx logs each request at INFO with its full URL, and the API key is in that query string. `provider.py` now sets the `httpx` and `httpcore` loggers to `WARNING`.
+- **I decided:** `WARNING` for each failed attempt (cell key, attempt number, reason: error kind, status code, or the validation check that failed). `WARNING` when a stale forecast is served (with its age), `ERROR` when the answer is a 503. Never the API key or the provider URL.
+- **Why:** the first build was silent: a stale answer or a 503 had no visible cause, the same lesson as the silent 500 in the registry. This reverses the earlier "no logging" choice for this service, at the owner's request.
+- **Research:** test `test_each_failed_attempt_is_logged_with_cell_and_reason_and_never_the_key` set a fake key and failed before the httpx fix. Reasons are built from fixed texts, never from httpx's messages.
+
+## Step 19 – weather-service performance (NFR-2.3)
+
+### 106. The load test only asks for pre-warmed cells
+- **AI suggested:** none. The owner decided this before the script was written.
+- **I decided:** `perf/weather_load.js` warms three grid cells once (three provider calls, at the cell centres). The 2-minute run at 10 requests per second only asks for points inside those cells, with 1 to 7 days. Thresholds: p95 <= 100 ms, no failed request, no dropped iteration, all checks pass (status 200, `stale` false, days count right). If the warmup fails, the run aborts.
+- **Why:** NFR-2.3 is about the fresh path, the one served from memory with no provider call. A run that also hit uncached cells would measure Open-Meteo's response time and would send hundreds of extra calls to a free API. Open-Meteo's free tier is for non-commercial use and has a daily call limit (from memory, not re-checked on the pricing page). The "checks" threshold is my addition: without it a `stale: true` answer would still pass the other three thresholds.
+- **Research:** the usage limits quoted here are from memory, not re-checked online. Not run yet: the owner runs k6 and records the numbers in the README table.
+
+### 107. NFR-2.3 measured on the fresh path
+- **Result (2026-11-18, local WSL, freshly started service):** `fresh_forecast` at 10 req/s for 2 min: 1201 requests, 0 failed, 0 dropped, all checks 100%. p95 6.42 ms against the 100 ms target (avg 4.5, max 11.55). The warmup's 411 ms max is the only real Open-Meteo traffic and is not part of NFR-2.3.
+
+## Step 20 – planner-service irrigation formulas
+
+### 108. FAO-56 is the single source for the irrigation formulas
+- **AI suggested:** read the actual FAO-56 chapters (5, 6, 8 and Annex 8) and cite a chapter, table or equation number for every claim, and list what FAO-56 does not say.
+- **I decided:** FAO-56 (Allen et al. 1998) is the only source for ETc = Kc ET0, Ks, TAW, RAW, p, the depletion balance and the climate adjustment of Kc. This is the instructor's requirement. Where FAO-56 is silent, the planner author decides and logs it.
+- **Why:** one source keeps the formulas checkable against the paper, and the instructor will check them there.
+- **Research:** `services/planner-service/docs/research/fao56.md`. Gaps FAO-56 leaves open: effective rainfall (it only has P - RO and a "skip rain under 0.2 ET0" rule), drip irrigation for TAW and Ks (the wetted fraction fw only appears in Kc ini and in Ke), irrigation efficiency, and what to do outside the u2 and RHmin limits of Eq. 62 and 65. Annex 8 is a dual-Kc example (Kcb + Ke), so a single-Kc planner is a simplification.
+
+## Step 20 – weather-service: wind and humidity
+
+### 109. Add wind and minimum humidity to every day
+- **AI suggested:** names `wind_speed_10m_mean` and `relative_humidity_2m_min`, `wind_speed_unit=ms`, and the checks: wind not negative, humidity from 0 to 100, units `m/s` and `%`, both rounded to 2 decimals like the sum of rain.
+- **I decided:** each day gets `wind_10m_ms` and `rh_min_pct`, after `rain_mm`. FR-2.8 applies: a missing field, a null, a non-number, a negative wind, a humidity outside 0-100 or a wrong unit is a provider failure (retry, stale or 503). Never a default. The cache is in memory, so a restart is enough, no migration.
+- **Why:** so the planner can apply the FAO-56 climate adjustment of Kc (Eq. 62 and 65), which needs `u2` and `RHmin`. The system is global, and in hot, dry, windy places Kc mid can be about 10% higher. The wind stays at 10 m here: the conversion to 2 m (FAO Eq. 47) is the planner's job, so this service stays crop-agnostic.
+- **Research:** the Open-Meteo docs list "Mean Wind Speed (10 m)" and "Minimum Relative Humidity (2 m)" as daily variables but print no API names for them, and `wind_speed_unit` accepts `ms`. One real call (2026-11-18, lat 31.25, lon 34.75 cell) confirmed the names, the units `m/s` and `%` and that the values are sane for the Negev in November: wind 1.5 to 2.5 m/s, minimum humidity 28 to 51%. The FAO equation numbers are as given by the owner, not re-checked in FAO-56. Humidity arrives as whole numbers (41), which become `41.0`.
+
+## Step 21 – irrigation-calc-reference skill and crop data
+
+### 110. Crop values live in crop_profiles.json, not in code
+- **AI suggested:** a data-only JSON file keyed by the registry crop id (`tomato`, `bell-pepper`), with Kc ini/mid/end, height h, all Table 11 stage rows (one marked default) and a `source` next to every value.
+- **I decided:** `services/planner-service/crop_profiles.json` is the single source of crop values. Adding a crop means adding an entry, not changing code. The default stage row is the Mediterranean one for both crops.
+- **Why:** the numbers can be checked and changed without touching formulas, and every value shows where it came from.
+- **Research:** FAO's own tools (CropWat, AquaCrop) keep crop data in crop files (from memory, not re-checked). Values from FAO-56 Tables 11 and 12 as read in `docs/research/fao56.md`. Pepper init is printed "25/30" in Table 11; 30 is stored because 30+35+40+20 = 125 (AI inference, not stated by FAO).
+
+### 111. Drip root depth and a 30 % trigger instead of FAO's values
+- **AI suggested:** FAO Table 22 (tomato 0.7-1.5 m, pepper 0.5-1.0 m) and p (0.40 / 0.30).
+- **I decided:** root depth 0.10 m at planting, linear to 0.30 m at the end of the development stage, then 0.30 m. Irrigate when depletion reaches 30 % of TAW. The instructor's "half" is a simplification.
+- **Why:** Table 22 is for deep, non-drip roots (its footnote 1). On drip, most feeder roots are in the top 25-30 cm, so a bigger Zr would count water the roots cannot reach. FAO-56 has no rule for TAW under drip (gap in the research file).
+- **Research:** WA DPIRD "Drip irrigating tomatoes on sand" (75 mm at transplant to 300 mm mature, most feeder roots 0-25 cm), UF/IFAS root distribution, Purdue (pepper, upper foot). Trigger: UC 20-30 %, UF/IFAS 33 %. These sources are the owner's, not re-checked by the AI.
+
+### 112. Tomato Kc end is 0.80
+- **AI suggested:** FAO gives 0.70-0.90 for tomato and no rule to pick inside the range (fao56.md §2).
+- **I decided:** 0.80, the middle of the range. The range is kept in the file.
+- **Why:** an arbitrary end of the range would bias every late-season plan. The middle is the least biased choice.
+- **Research:** FAO-56 Table 12 and Ch. 6 (Kc end is high if irrigated until fresh harvest, low if the crop dries in the field; no number).
+
+### 113. Rain rule: ignore under 0.2 ET0, runoff 0
+- **AI suggested:** FAO-56 has no effective-rainfall table (gap). It has the 0.2 ET0 skip rule (Ch. 8) and Annex 8 sets runoff to zero.
+- **I decided:** rain under 0.2 x ET0 is ignored, otherwise all of it reduces depletion; runoff 0; depletion never below 0 (excess is lost).
+- **Why:** it uses only what FAO states and avoids inventing a percentage.
+- **Research:** FAO-56 Ch. 8 (Eq. 85, limits on Dr), Annex 8 assumptions.
+
+### 114. Uniformity factor 1.1
+- **AI suggested:** FAO-56 gives no rule for application uniformity or efficiency (gap).
+- **I decided:** `UNIFORMITY_FACTOR` = 1.1, a setting in the planner's `config.py`, applied only to irrigation litres, never to rain.
+- **Why:** drip emitters do not deliver the same amount everywhere; 10 % extra covers the dry spots. Rain is not delivered by emitters.
+- **Research:** UC drip non-uniformity 1.1-1.2 (the owner's source, not re-checked by the AI).
+
+### 115. soil_moisture 0-10 entered by the grower, no stored state
+- **AI suggested:** none; this is the instructor's requirement (the planner keeps no state between runs).
+- **I decided:** `soil_moisture` is required, 0 to 10, 0 = completely dry or first planting. Start depletion = TAW x (1 - soil_moisture/10). Missing or out of range is an error.
+- **Why:** with no stored state, the grower's reading is the only way to know today's wetness.
+- **Research:** USDA "feel and appearance" method (a grower can judge soil wetness by hand; the owner's source, not re-checked). FAO Eq. 87 starts depletion from a measured water content.
+
+### 116. Season ended is a warning, not an error
+- **AI suggested:** FAO-56 gives stage lengths "indicative" only (Table 11 footnote), so a plot can be past them while the crop still grows.
+- **I decided:** after the total season length, stage is `"ended"`, Kc end is used, `season_ended` is true and the warning `SEASON_ENDED` is added. The grower still gets the plan.
+- **Why:** an error would leave the grower with nothing for a crop that is still in the field.
+- **Research:** FAO-56 Table 11 footnote and Ch. 6 text (lengths vary with region, climate and variety).
+
+### 117. Climate adjustment uses the plan-days average
+- **AI suggested:** FAO Eq. 62 (Kc mid) and Eq. 65 (Kc end, only when Kc end >= 0.45), with u2 from the 10 m wind by Eq. 47.
+- **I decided:** one adjustment from the average u2 and RHmin over the plan days, clamped to 1-6 m/s and 20-80 %, added to Kc mid and Kc end. Reported in `assumptions.climate_adjustment`.
+- **Why:** FAO averages over a stage, not one day, so one windy day must not move Kc. Clamping is our reading of "the limits should be observed" (FAO does not say what to do outside them).
+- **Research:** `docs/research/fao56.md` §5. Eq. 47 (`u2 = u10 x 4.87 / ln(67.8 z - 5.42)`) is from FAO Ch. 3 and is not in the research file: not re-checked yet.
+
+### 118. Three hand-checked worked cases as test expectations
+- **AI suggested:** fill the three empty cases (A tomato mid-season, B the same with rain, C pepper at first planting) with per-day tables, and check every number against the rules with a script outside the repo.
+- **I decided:** case A was calculated by the owner. Cases B and C were completed with the AI and the owner re-checks them before the presentation. The tests use these tables as expected values. The script found no disagreement with the rules: every mm, litre, minute and percentage matches.
+- **Why:** the three cases cover a mid-season refill, all three rain outcomes (counted, ignored under 0.2 ET0, counted and lost above capacity), and first planting with a root zone that grows. Checking with a separate script keeps the expected values independent of the code under test.
+- **Research:** the rules themselves are in entries 110-117 and `docs/research/fao56.md`. No new source was needed.
+
+### 119. The irrigation engine is a pure module
+- **AI suggested:** `engine.py` takes plain data (plot, crop profile, soil, emitter flow, forecast days with their dates, soil_moisture, uniformity factor) and returns the plan. No HTTP, no clock, no file reading. `profiles.py` reads `crop_profiles.json`, `clients.py` talks HTTP, `main.py` only wires them.
+- **I decided:** (confirm) accepted.
+- **Why:** the engine can be tested alone with the three hand-calculated cases, and a bug in a number can only be in one file.
+- **Research:** none; structure only.
+
+### 120. No retries in the planner: the weather-service is the only retry point
+- **AI suggested:** one call per upstream per request, no retry loop in the planner.
+- **I decided:** (confirm) accepted. A failure becomes 503 `UPSTREAM_UNAVAILABLE` with `Retry-After`; a test asserts exactly one call per upstream.
+- **Why:** retries at every hop multiply (planner 3 x weather 3 = 9 provider calls) and the caller waits longer than any timeout it set.
+- **Research:** none (same reasoning as entries 91-102).
+
+### 121. Timeouts: registry 1.0 s, weather 4.5 s
+- **AI suggested:** `REGISTRY_TIMEOUT_S` 1.0 and `WEATHER_TIMEOUT_S` 4.5, both settings. Each is applied twice: httpx per phase, and `asyncio.timeout` for the whole call.
+- **I decided:** (confirm) 1.0 s and 4.5 s.
+- **Why:** the registry answers in tens of ms (NFR-1.1), so 1 s is generous. The weather-service may spend its whole 4 s budget on retries before it sends a stale forecast: 4.5 s lets us receive that answer instead of giving up first and showing an error.
+- **Research:** weather-service budget from its README.
+
+### 122. A crop without a profile is 409 CONFLICT
+- **AI suggested:** 409 `CONFLICT` with a detail naming the crop and `crop_profiles.json`, checked before the weather call.
+- **I decided:** (confirm) accepted.
+- **Why:** the request is fine and the services are up; the data is incomplete (the registry has a crop the profile file lacks). 500 would look like a bug, 503 would invite a pointless retry, 404 would say the plot is missing.
+- **Research:** none.
+
+### 123. Choices the skill does not cover (please confirm each)
+- **AI suggested / I decided:** confirmed by Maor on 2026-11-20 (all 14).
+  1. `today` = the first forecast date (the weather-service's local "today" at the plot); the planner has no clock for plan dates. `generated_at` is the server's UTC clock.
+  2. `season_ended` is true when the first plan day is past the season length (later days may be `ended` without the flag).
+  3. A forecast date before planting (time-zone edge) is treated as the planting day (day 0).
+  4. `crop` in the response is the crop id (`"tomato"`); `plot_id` and `plot_name` come from the registry.
+  5. `reason` is one of four fixed texts: irrigate; rain counted; rain ignored; below trigger. Irrigation wins when rain was also counted.
+  6. Rounding: `root_depth_m` 3 decimals; `wind_2m_ms`, `rh_min_pct`, `kc_change`, `emitters`, `system_flow_lph` 2 decimals; `-0.0` printed as `0.0`. `run_minutes` is `ceil` of the value rounded to 9 decimals, so float noise (120.00000000001) does not add a minute.
+  7. Soil and emitter are read by id (`/v1/soils/{id}`, `/v1/emitters/{id}`), not by listing the catalogues.
+  8. The weather answer must have exactly `days` consecutive dates and every field, else 503 (weather-service): a short forecast must never be padded.
+  9. A registry 404 on the soil or emitter, or any non-200, is 503 (registry-service), not 404: the plot exists, its data is inconsistent.
+  10. When several upstreams fail in the same request, the first in this order is reported: plot, soil, emitter, weather.
+  11. Extra setting `RETRY_AFTER_S` (30 s) for the 503 when the failed service sent no `Retry-After`; same as the registry.
+  12. `UNIFORMITY_FACTOR` must be 1 or more.
+  13. The plot id is URL-quoted before it goes to the registry.
+  14. Unhandled errors: 500 with `code` `INTERNAL_ERROR` (the weather-service uses `UNAVAILABLE` there, which would be wrong here).
+     *Maor, 2026-11-20:* the planner keeps `INTERNAL_ERROR` for unhandled 500s: `UNAVAILABLE` would tell clients to retry a bug. The registry keeps `UNAVAILABLE` because the P1 spec gives a closed code list; the P2 spec defines no 500 code for the planner. Open question for Alon: unify the 500 code across services?
+- **Why:** each was needed to write working code and the skill is silent. Entries 110-118 stay as they are.
+- **Research:** none.
+
+### 124. Compute with the rounded values that are shown
+- **AI suggested:** found live: kc 0.81 x et0 2.76 shown, but need_mm 2.25 (the engine used the hidden Kc 0.8143); also 50.25 / 52.5 = 95.71 % shown as 95.72. Every step now starts from the rounded numbers in the response: Kc 2 decimals first, need_mm = round(kc x et0, 2), depletion, irrigation and soil water in 0.01 mm, litres from the shown irrigation_mm, minutes from the shown litres and shown system flow. A property test checks this on seven plans.
+- **I decided:** adopted (the owner's decision).
+- **Why:** a grower or the instructor can check every number by hand. The difference is hundredths of a mm. To make the percentage checkable on every day, each day also shows `soil_capacity_mm` (capacity grows with the roots, so today's value in `assumptions` is not enough). Capacity is `round(mm per m x Zr, 2)` with Zr at full precision: rounding Zr first would move case C day 1 from 18.04 to 18.03 mm.
+- **Research:** none. The skill (SKILL.md rule 9, formulas.md sections 4, 5, 6, 7) was updated.
+
+### 125. Daily run cap of 24 h and the IRRIGATION_CAPPED warning
+- **AI suggested:** found live: soil_moisture 0 on the mature North block (TAW 52.5 mm, 1.0 L/h emitters) gave 2079 minutes in one day, which is impossible. The engine cuts `irrigation_mm` to the largest 0.01 mm amount whose `run_minutes` (same formula) fits `MAX_RUN_MINUTES_PER_DAY` (1440, a setting). The rest stays in the depletion and the next morning's check refills it, capped again if needed. Every shown number stays checkable by hand.
+- **I decided:** the 24 h cap, the warning `IRRIGATION_CAPPED` once per plan (first capped day) with the needed mm, the system's application rate (`application_rate_mm_per_h = round(system_flow_lph / area_m2, 2)`, always in `assumptions`) and the hours a full refill needs, and a "capped at 24 h" reason on the day. The rate idea is the owner's: tell the grower the speed of his system; faster emitters shorten the time, not the amount of water.
+- **Why:** the plan must never ask for more hours than a day has, and it must not silently shrink the water: the amount is kept and spread over days. North block example: day 1 36.36 mm in 1440 min, day 2 the remaining 21.89 mm in 867 min.
+- **Research:** none. The skill (rule 8b, formulas.md sections 4-6) and the README were updated. Not covered: the hours in the warning use the shown rate and include the uniformity factor; the cap applies per day on its own, not to the sum of the plan.
+
+### 126. Frontend: soil_moisture asked first, no default
+- **AI suggested:** a default of 5 when `?soil_moisture=` is missing, so the plan always loads.
+- **I decided:** rejected. The planner never guesses (no stored data, FR-2.8 spirit). Without the value the page shows only "How wet is the soil today?" (0-10, one tap, with the hand "feel" check); the plan loads after the pick and the value stays in the URL, nothing is stored. An invalid value asks again.
+- **Why:** a guessed soil value would silently change the irrigation advice.
+- **Research:** none.
+
+### 127. Frontend: season-ended gate and warnings rendered by code
+- **AI suggested:** show all warnings as one list under the answer.
+- **I decided:** `SEASON_ENDED` first, the plan behind "Show the plan anyway" (`<details>`, the plan is already loaded, no second request); `IRRIGATION_CAPPED` next to today's answer with the planner's message; `STALE_FORECAST` as before (age, stronger over 6 h); unknown codes: the message as-is.
+- **Why:** each warning is shown where it changes the grower's decision; a new planner code is never dropped.
+- **Research:** none.
+
+### 128. Frontend: planner timeout 6 s
+- **AI suggested:** 8 s.
+- **I decided:** 6 s from the chain budget (registry 1 s + weather 4.5 s = 5.5 s). Registry 3 s and health 2 s unchanged.
+- **Why:** long enough for the planner's worst case, no longer.
+- **Research:** none.
+
+### 129. Frontend: `cn` package flagged, removed, then accepted (corrected)
+- **AI suggested:** removed `shadcn` and its transitive `cn` package because `cn` looked unknown (supply-chain caution), and dropped the unused `shadcn/tailwind.css` import.
+- **I decided:** after checking the publisher (same maintainer as the shadcn CLI) and the official shadcn changelog (components import `cn` from the `cn` package, a drop-in for twMerge(clsx(...))), `cn` is official and accepted, with `@base-ui/react` (official shadcn Base UI support). Both are on the allow-list. `shadcn migrate cn` switched `src/lib/utils.ts` to `export { cn } from "cn"` and removed `clsx` and `tailwind-merge`.
+- **Why:** the first removal was wrong. Lesson: verify the publisher and the changelog before removing a package.
+- **Research:** `npm view` (maintainer), shadcn changelog.
+
+### 130. Frontend: NFR-2.8 verified with a real browser at 375 x 667
+- **AI suggested:** Playwright MCP.
+- **I decided:** the MCP failed to connect, so the same check ran with playwright-core and the installed Chromium. On /, normal plot, season-ended (closed and open), capped, soil question, error: `scrollWidth` = 375 and today's answer ends inside 667 px on all. Screenshots in `services/frontend/docs/screenshots/`.
+- **Why:** the requirement is measured, not assumed.
+- **Research:** none.
+
+### 131. Frontend: real shadcn/ui components, with a dependency check
+- **AI suggested:** dropped shadcn because nothing used it.
+- **I decided:** the instructor's stack requires real shadcn/ui: Card (today's answer, day rows), Alert (warnings, errors), Badge (stage, "Old forecast"), Button (soil 0-10 grid, "Update plan"), restyled to our palette; behaviour unchanged. New dependency allow-list: `cn`, `@base-ui/react`, class-variance-authority, lucide-react, tw-animate-css (+ radix if ever needed).
+- **Why:** requirement of tasks/p2.md; the allow-list check catches unknown packages the CLI may add.
+- **Research:** none. NFR-2.8 re-checked at 375 x 667 on all seven pages, screenshots refreshed.
+
+## Step 22 – frontend redesign (portfolio look)
+
+### 132. Redesign direction: dark earthy band, light paper cards
+- **AI suggested:** nothing different: the direction came from Maor in the task. The AI's own choices inside it: the answer card overlaps the lower edge of the band (one frame works for the question, the plan, the error and the loading state), and the band ends in a slow wave in the page colour instead of a straight line.
+- **I decided:** a hybrid "field instrument with a rustic touch". A dark soil band with the brand and the title on every page; data on warm paper cards; from 1024 px a two-column grid, 1200 px wide (answer, gauge and chart on the left, soil form and day list on the right); one column at 375 px. Same pages, same behaviour, no new route, feature or API call.
+- **Why:** the band gives the app an identity; the paper keeps the numbers readable in sunlight (the grower reads them in the field). Alon's P2 rule is "no other pages or features", so only the look changes.
+- **Research:** none. Measured on the built app (mock services, no database) on 11 states at 375, 820 and 1440 px: normal, no irrigation, capped, a 17 h 20 min run, old forecast, season ended (closed and open), home, soil question, two errors. No horizontal scroll, and every text node passes WCAG AA by script (4.5:1, 3:1 for large text).
+
+### 133. Gauge and week chart in inline SVG, no chart library
+- **AI suggested:** the task ruled out a chart library. The AI added: draw only from numbers the plan already returns, and hide a visual when a number it needs is missing (never zeros, as FR-2.8 does in the weather-service).
+- **I decided:** gauge = half dial of soil water at the end of today (0 to 100%) with a tick at the trigger (100 minus `irrigate_when_depleted_pct`, so 70%): leaf green above it, water blue at or below it. Chart = rain and irrigation as stacked bars, crop need as a line, ET0 as a dashed line, drawn twice from the same data (under 640 px and from 640 px) so the text keeps its size on screen. **Maor to confirm:** the task says "depletion vs the 30% trigger"; the gauge draws soil water, so it shows the same number as the answer card and the day bars, and says the depletion in words ("18% used. Watering starts at 30%.") and on the tick ("30% used").
+- **Why:** no new dependency (the allow-list is unchanged), server-rendered, nothing runs in the browser. Series differ by shape (line, dashes, hatch, solid), not only by colour. One number means one thing across the page.
+- **Research:** none. The dial and dash geometry were checked in Chromium.
+
+### 134. Fonts: Besley and IBM Plex Sans (the AI's pick, Maor to confirm)
+- **AI suggested:** Besley (a Clarendon-style serif, the lettering of almanacs and seed packets) for headings and plot names; IBM Plex Sans for text and every number. They replace Bricolage Grotesque and Atkinson Hyperlegible Next.
+- **I decided:** both through `next/font/google`: downloaded at build time and served from our own origin, so the browser makes no request to Google (checked: 0 external requests). `font-variant-numeric: tabular-nums` on the body.
+- **Why:** the task asks for a characterful serif and a clean sans with tabular numerals. Measured in Chromium: Plex Sans digits have the same width everywhere ("1111" and "0000" are both 96 px at 40 px, with or without `tabular-nums`), so numbers line up in columns. The key number is always Plex, never the serif.
+- **Research:** Next's font list shows both as variable fonts. "Besley is a Clarendon revival" is from memory, not re-checked.
+
+### 135. Colour tokens: one set, one meaning per colour
+- **AI suggested:** define every colour once in `globals.css` as a CSS variable mapped to a Tailwind theme token: paper (`--background` #e8e3cf, `--card` #fbf9f1, ink #1d1b11, muted ink #58533b), earth (`--soil` #25200f, `--straw` #d8cb98) and three meanings with an ink and a tint each: leaf green = OK, water blue = irrigation, amber = warning. The shadcn tokens (primary, muted, border, ring) are mapped on top.
+- **I decided:** exactly that; light only (the old unused `.dark` block is gone, `@custom-variant dark` stays so no `dark:` class in the shadcn files turns on). shadcn logic is untouched: the only edit in `ui/` is `button.tsx`'s base classes (press = `scale(0.97)` instead of a 1 px shift, a list of properties instead of `transition-all`).
+- **Why:** one place to change a colour, and a colour never changes meaning. Measured contrast: ink on paper 16.4:1, muted ink 7.3:1, amber ink on amber tint 7.3:1, paper on soil 14.1:1, pale text (`--soil-muted` #cfc6a6) on soil 9.5:1; edges and fills at least 3.6:1 (input border 3.6, amber fill 3.8, leaf 5.0, water 5.6).
+- **Research:** WCAG 2 AA limits (4.5:1 text, 3:1 large text and graphics) from memory.
+
+### 136. The furrow texture is generated SVG, not an image
+- **AI suggested:** three ways: a drawn static SVG, generated paths, or a CSS repeating gradient. Generated paths give contour lines that no pattern repeat can.
+- **I decided:** `furrowPaths()` in `src/lib/furrows.ts` makes smooth parallel lines bent by two sine terms and one Gaussian "hill" (a contour-map look). It is deterministic (no randomness) and computed once. Used in the band (straw lines at 20% opacity, fading to the bottom), in the answer card (water blue or leaf green, the colour of the answer) and as a leaf-green patch on each plot card (seeded by the plot id).
+- **Why:** no photo and no external file; about 10 KB of path data in the band (18 lines, 120 px steps). The lines stay thin and pale so they never fight the numbers (all text passes the contrast script).
+- **Research:** none.
+
+### 137. Motion: one gauge fill and press feedback
+- **AI suggested:** the notes in `.claude/skills/emil-design-eng`: a strong ease-out (`cubic-bezier(0.23, 1, 0.32, 1)`), `scale(0.97)` on press, transitions on named properties, hover effects only where hover exists (Tailwind 4 `hover:` already is), no animation for things seen all day.
+- **I decided:** the gauge fills once (900 ms, 150 ms after load: a one-off, not a repeated UI action). Buttons and plot cards answer a press in 150 to 200 ms; plot cards rise 2 px on hover. The old rising "water level" and the seven staggered day bars are removed. `prefers-reduced-motion` turns the fill off and cuts transitions to 0.01 ms (checked: `animation-name: none`).
+- **Why:** this is a tool read in the field: motion should show what changed (the gauge) or confirm a press, nothing else.
+- **Research:** none.
+
+### 138. Plot cards show the soil from `soil_id`, no new request
+- **AI suggested:** the cards need crop, soil and area. `/v1/plots` already returns `soil_id`, and the registry's soil names ("Sand", "Loam", "Clay loam") are the ids in sentence case, so no `/v1/soils` call is needed.
+- **I decided:** `labelFromId("clay-loam")` gives "Clay loam"; `soil_id` is added to the frontend `Plot` type (it is already in the API answer). The plan page shows the crop the same way from `plan.crop`.
+- **Why:** the rule is no new API call. Limit: a soil whose registry name is not its id in sentence case would show the id version; then fetch `/v1/soils`.
+- **Research:** `services/registry-service/seed_registry.sh` (soil and crop ids and names).
+
+## Step 23 – frontend: cinematic motion pass
+
+### 139. References and what was taken from each
+- **AI suggested:** take the feel of each reference and copy nothing: the same pages and behaviour, only the look and the motion change (Alon's P2 rule: no new page, route, API call or feature).
+- **I decided:** **SpaceX**: a dark hero with a full-bleed photo, a huge uppercase title with wide letter-spacing, one small brand pill as the only navigation, outline buttons that fill on hover, sections that reveal on scroll. **Figma Make**: oversized type, one vivid accent (ion cyan `#5ce1ff`, used on chrome only, never on data), large radii, and "product preview" cards that float on the photo: the real answer card and the soil gauge sit inside the hero at 1440 px, the 7-day chart right below it. **Dribbble**: the home page is a gallery of rounded cards with a photo on top (rotated by plot), they lift and lean toward the cursor on hover and the soil and area chips slide up over the photo; no filter chips, that would be a new feature. **motion.dev**: springs (tilt, liquid level, bars), scroll-linked motion (hero parallax) and physical press feedback.
+- **Fonts (the AI's pick, Maor to confirm):** Unbounded replaces Besley for titles and headings (decision 134 is superseded for headings; IBM Plex Sans stays for text and every number). A wide geometric sans gives the SpaceX look; a wide serif in capitals does not. The dev warning "Failed to find font override values" did not need a fix: Next's own `calculateSizeAdjustValues` finds metrics for Unbounded, Besley and IBM Plex Sans, and Maor's dev log has no such line.
+- **Why:** a dark, moving hero is the memorable moment; everything under it stays quiet so the data stays readable (paper cards for the day list and the form, dark instrument cards for the answer, gauge and chart).
+- **Research:** none. The reference sites were not opened; they are Maor's descriptions.
+
+### 140. Motion (the library) instead of CSS-only
+- **AI suggested:** CSS alone covers the intro, the hero atmosphere and the press feedback, and runs off the main thread. It cannot do springs that keep their velocity, a number counting to a real value, scroll-linked parallax or gesture-driven tilt without hand-written JavaScript.
+- **I decided (Maor's choice):** `motion` (MIT, 14.14.0), the only new dependency, imported from `motion/react`; `LazyMotion` with `domAnimation` and `strict` (only `m` components, the features load after first paint); `MotionConfig reducedMotion="user"`. Motion components are small `"use client"` leaves; pages and fetching stay on the server. Split: **CSS** for what must start at first paint (headline reveal, Ken Burns, grid drift, radar, liquid waves, press feedback); **Motion** for physics and scroll (tilt, count-up with `animate`, liquid level spring, chart `pathLength`, droplet bars, plan bars, scroll reveals, `useScroll` parallax). Only transform, opacity and `pathLength` are animated.
+- **Cost, measured** (Next 16 prints no sizes in `next build`, so from `.next`): all client JS 575 to 807 KB raw, 177 to 260 KB gzip (+83 KB gzip); first-load JS (uncompressed) `/` 476 to 661 KB and `/plots/[id]` 476 to 699 KB. Motion itself is about 200 KB raw / 73 KB gzip in three chunks (core 108/37, `domAnimation` 57/22 loaded after first paint, springs and `animate` 37/14); our new components are about 30 KB raw. Lighthouse on `/` (local, headless Chromium, simulated throttling): desktop 93 (FCP 0.3 s, LCP 0.9 s, TBT 190 ms, CLS 0), mobile 65 (FCP 1.0 s, LCP 3.5 s, TBT 1.4 s, CLS 0), accessibility 100 on both. The mobile score is script evaluation under a 4x CPU slowdown (profiled: React DOM, Next and the module loader about 1.5 s, Motion's core about 0.4 s). No old-design Lighthouse run exists to compare with.
+- **Why:** the owner wants springs and gestures; the price is one dependency and the numbers above. The first paint does not wait for it: the server HTML is the final state.
+- **Research:** Motion's API is from memory and the installed typings; motion.dev was not re-read.
+
+### 141. Home to plot: the photo morphs with View Transitions, not `layoutId`
+- **AI suggested:** Motion's `layoutId` only pairs two elements that live in one React tree. In the App Router each page is a separate tree (the old page unmounts, the new one mounts), so the pair never forms. React's `<ViewTransition>` does it with the browser's View Transitions API and is the pattern in the Next 16 guide.
+- **I decided:** **a real shared-element morph, done with `<ViewTransition>`, not Motion.** The card photo and the plot hero use the same name (`plot-photo-<id>`, `share="morph"`); the loading scene of the plot page also uses it, so the pair forms even though the plan streams in later. That scene is a client component that reads which card was clicked (a module variable set by `PlotLink`), because the static shell does not know the plot id. Checked in Chromium: on click the browser creates the `::view-transition-group/old/new(plot-photo-…)` animations. The way back (plot to home) is a plain page change, checked: the list streams in after the shell, so there is no card yet to morph into. Without browser support, or with reduced motion (0.01 ms), the page just changes.
+- **Why:** it works with App Router navigation and costs no JavaScript animation. Limit: only Chromium-class browsers run it; others get a plain page change.
+- **Research:** `node_modules/next/dist/docs/01-app/02-guides/view-transitions.md` (Next 16.4.6), read; the morph was checked with `document.getAnimations()` while navigating.
+
+### 142. Photos: licence, credits, compression, serving
+- **AI suggested:** keep the three Unsplash photos but never ship the originals (16 MB): resize and recompress with `sharp` (already in `node_modules` through Next), serve through `next/image`, and credit the photographers.
+- **I decided:** Unsplash License (free for this use, credit not required, given anyway): `public/images/CREDITS.md` and one line in the footer. `sharp` + mozjpeg, progressive, under about 500 KB each: `hero-field.jpg` 4000x2250 (2.3 MB) to 2400x1350, 439 KB (q72); `rows-aerial.jpg` 2985x4096 (5.3 MB) to 1400x1921, 462 KB (q56); `field-trees.jpg` 5216x3640 (7.8 MB) to 1800x1256, 489 KB (q52). Total 15.5 MB to 1.4 MB. The two darker photos are below the 2400 px maximum on purpose: at 2400 px they were 700 KB to 1 MB at q40. The hero has `priority`; plot cards use quality 60 (so `images.qualities` lists 60 and 75 in `next.config.ts`), blur placeholders come from the static imports. The photo for a plot is a hash of its id, so the card and the plot page always agree.
+- **Why:** the hero is the largest thing on the page; the three originals would have cost 16 MB of bandwidth. Text over a photo is only safe with an overlay: a dark gradient on every hero, checked on real pixels (decision 147).
+- **Research:** the licence terms are from memory of unsplash.com/license; not re-read.
+
+### 143. Reduced motion: off, not slower
+- **AI suggested:** one rule for the whole app: with `prefers-reduced-motion: reduce` nothing moves, the content is identical.
+- **I decided:** CSS: intro, headline reveal, Ken Burns, grid, radar and liquid waves are `animation: none`; transitions and view transitions are 0.01 ms. Motion: `MotionConfig reducedMotion="user"` plus `useReducedMotion()` where the value is set by hand (parallax stays at 0, count-up, chart, bars, gauge and scroll reveals stay in their final state, tilt and hover lift are off). The server HTML is already the final state, so a reduced-motion visitor never sees a hidden or half-drawn element. Press feedback (`scale(0.97)`) is a 0.01 ms transition, so it is effectively instant.
+- **Why:** reduced motion should mean fewer and gentler animations, never missing information. Checked with Chromium `reducedMotion: "reduce"` on five states at 375 and 1440 px: same text, same layout (screenshots `*-reduced.png`), and the contrast script passes.
+- **Research:** none.
+
+### 144. Big glass cards are dark panels without backdrop blur
+- **AI suggested:** the brief asks for glass cards. `backdrop-filter` over a photo that moves all the time (Ken Burns, radar) makes the browser blur the backdrop again every frame.
+- **I decided:** small chrome keeps real glass (`.glass`, blur 14 px: the brand pill and the photo chips on the plot cards); the big cards on the hero (`.panel`: answer, gauge, chart, soil question, error) are a 91% opaque dark surface with a top highlight and no blur. At that opacity the blur was invisible anyway.
+- **Why:** measured in headless Chromium with software rendering, on the plot page: 10 fps with blur on the big cards, 18 fps without, 41 fps without blur and without the hero animations, 61 fps with no animation at all; after the change 18 fps there. On a GPU it is faster, but the headroom is the point. The radar was also moved out of layout: it is sized in px and placed with `translate` and container units, because Lighthouse blamed its 2000 px box for a 0.76 layout shift (the viewport changed after load).
+- **Research:** none; the numbers are our own measurements.
+
+### 145. The soil gauge is a tank of liquid now (Maor to confirm)
+- **AI suggested:** "fills like liquid with a gentle wave" is hard to do on a dial arc. A tank is also the more honest picture of "percent of capacity": the level is the percentage.
+- **I decided:** a rounded tank, level = soil water left, two slow waves on the surface (CSS, one wavelength per loop so it is seamless), the level rises on a spring (a little overshoot), a dotted line at the trigger (100 minus `irrigate_when_depleted_pct`, labelled "30% used"), leaf green above the trigger and water blue at or below it, as before. The number sits in a dark window so the moving surface never runs through the digits. Same inputs, same text, same hiding rule when a number is missing.
+- **Why:** the old dial had a zone ring and a tick that were hard to read at a glance; same data, clearer picture. The surface sweeping through the digits failed the contrast script until the window was added.
+- **Research:** none.
+
+### 146. Layout: dark instrument cards, paper ledger
+- **AI suggested:** the data cards that float on the hero (answer, gauge, chart) turn dark by re-pointing the colour tokens in one class (`.on-dark`), so no component needed a second set of colours; the day list and the soil form stay on paper, because that is where the owner reads the numbers one by one.
+- **I decided:** at 1024 px and wider the answer and the gauge sit side by side on the photo (grid placement only; the DOM order is still answer, gauge, chart, form, day list, so a phone shows the same order as before); the chart, the form and the day list follow on paper. The forecast age moved into the answer card's footer, because the free line under the card landed on the dark photo. The soil question and error pages are now full-viewport scenes with a panel on the photo (they looked empty on desktop). Buttons: outline fills on hover from the left, the 0 to 10 tiles fill from the bottom; the press feedback is the existing CSS `scale(0.97)` (instead of `whileTap`; `whileTap` is on the cards).
+- **Why:** one token scope means the contrast rules stay in one place.
+- **Research:** none.
+
+### 147. Verification
+- **AI suggested:** measure instead of looking: a script hides all text, takes a full-page screenshot, and for every text box takes the pixels behind it (photo, gradient, radar, glass) and the text colour from the DOM; the worst 2% of pixels decide, against 4.5:1 (3:1 for 24 px, or 18.7 px bold). The infinite animations are frozen at four phases so the radar and the waves are covered.
+- **I decided:** 12 states (home, soil question, plan, no irrigation, capped, 17 h 20 min run, old forecast, season ended closed and open, planner error, unknown plot, home with the registry down) at 375 and 1440 px: 2537 text boxes, 0 below AA; with reduced motion on the five main states: 595 boxes, 0 below AA. No horizontal scroll at 375 or 1440 px in any of them. `npm run lint` and `npm run build` pass; `package.json` has exactly one new dependency (`motion`). Screenshots are in `docs/screenshots/` (normal, `-reduced`, `-full`, and one card hover).
+- **Why:** the first run of the script found real problems (the gauge number on the liquid, the forecast line on the photo, a hero label on a bright field); all fixed before the final run.
+- **Research:** WCAG 2 AA limits from memory.
+
+### 148. Mobile performance: measure first, keep only what the numbers support
+- **AI suggested:** the task listed ideas (simplify parallax, Ken Burns, grid and radar on phones; `next/dynamic` for below-the-fold motion; count-ups and chart only in view; smaller images; check LazyMotion) and said to keep only what a measurement supports. Lighthouse mobile on home was 65 (TBT 1.4 s). I measured before changing anything.
+- **I decided:** **Maor's decision: accept mobile Lighthouse 68 (the target of 85 is dropped).** The reason is the measurement below: with all Motion removed from home, the same lab scores 75, so even a page with no animation library cannot reach 85; the rest is the Next/React boot, which a polish pass does not touch. **What the measurement showed.** Lighthouse 12 (run with `npx`, not added to the project), production build, mock services on 18000 to 18002, Chromium from the Playwright cache. My baseline matched Maor's: mobile 63 (runs 61 to 67), TBT 1164 ms, LCP 4.05 s; desktop 92. Causes, from my own CDP profile (412 px, CPU x4, slow 4G, so the numbers are comparable to Lighthouse): (1) module evaluation of about 680 KB of JavaScript, the Next/React boot is the floor; (2) the single hottest app function was `CountUp`'s `frame`, which built a new `Intl.NumberFormat` on every animation frame (161 of 1227 ms); (3) the CSS effects (Ken Burns, grid, radar) cost raster time but are not what creates the long tasks. With all Motion removed from home the same lab still scored 75 (TBT 587 ms), so the framework alone caps this page near 75 to 80 in the simulated slow-phone lab.
+  **What I changed:** the formatter is built once per count-up; the farm "N plots" is plain text (it counted 0 to 3 for no reason); the hero parallax is a passive scroll listener, only with a real mouse and motion allowed, and no longer imports `useScroll` and `useTransform`; on phones and touch screens (`max-width: 639px` or `pointer: coarse`) Ken Burns, grid drift and the radar are off (the radar's 960 px phone variant became dead CSS and was deleted). Desktop with a mouse looks the same.
+  **What I tried and dropped because it did not measure:** `fetchPriority="high"` on the hero (Lighthouse flags it; A/B on the same mock, 6 runs each: 72 vs 70, LCP 4.06 s vs 4.06 s, so no effect); a Tilt without springs on touch (stubbing Tilt alone: 63 vs 64); a Motion-free home (what is left of Motion on home costs about 50 ms in the profile). Images: `sizes` is already right (92vw, 46vw, 380 px); a 412 px phone at 1.75 DPR needs the 750 px file; the cards are below the fold and not on the LCP or TBT path, so I left them. LazyMotion: only `domAnimation` is imported (`domMax` and the `motion.*` components appear nowhere, `strict` is on); the 26 KB projection file in the features chunk comes from Motion's own `VisualElement`, not from our code.
+- **Why:** the target of 85 on mobile is **not reached, and Maor accepted 68** (floor without Motion: 75). Paired runs on the same mock, 5 runs, median: mobile 63 to 68 (TBT 1164 to 855 ms, LCP 4.05 to 3.95 s); desktop 92 to 95 (TBT 210 to 158 ms; one run at 87, still at or above 90 in the median); profile TBT 968 to 764 ms (-21%); JS 224 to 222 KB gzip, 684 to 676 KB raw. The score moves 6 to 8 points between identical runs, so a single run proves nothing: I used medians and the profile harness. Going further needs the framework boot to be smaller (for example no `cacheComponents` and partial prefetching client runtime, or a static home): those are earlier decisions, not part of a polish pass.
+- **Research:** Lighthouse's own simulated-LCP code (`LargestContentfulPaint.js` in trace_engine): LCP is the end of the last non-low-priority node in a graph of every script requested before the observed LCP, so it follows total JavaScript, not the image. `next analyze` (Next 16.4.6) for the bundle by package: Motion is about 250 KB raw on the home route (core 30 KB, hooks and `m` 108 KB, `domAnimation` 114 KB, loaded after hydration).
+  **A mistake of mine, kept here on purpose:** my first rebuild script did not stop the old server, so every experiment after the baseline was served by a stale process with deleted chunks (TBT 0, 97 points). I found it from a 404 on a chunk, threw those numbers away, added a check that every chunk in the HTML answers 200, and redid all of them.
+
+### 149. Motion review with emil-design-eng
+- **AI suggested:** review the motion with the skill (easing, duration, springs, stagger, what should not animate), then apply it. The skill asks for a Before / After table:
+
+  | Before | After | Why |
+  | --- | --- | --- |
+  | `.intro` 900 ms, 110 ms step; headline words 1100 ms, 100 ms step | 650 ms and 750 ms, 70 ms step | the entrance plays on every page load; stagger should be 30 to 80 ms |
+  | scroll reveal 0.8 s, card stagger 90 ms | 0.6 s, 70 ms | same |
+  | count-ups 1.3 to 1.5 s; the plot count counted 0 to 3 | 1.0 to 1.1 s; the plot count is plain text | a number read at a glance has no purpose to animate |
+  | tank level spring, stiffness 55 / damping 9 (damping ratio about 0.6, overshoots the real level) | spring `duration 1.2, bounce 0.2` | functional data: bounce shows a wrong value for a moment |
+  | chart bars drop with stiffness 240 / damping 13 (ratio about 0.4) | `duration 0.6, bounce 0.2`, stagger 70 ms | same |
+  | card press `scale(0.985)` | `scale(0.98)` | the skill's range is 0.95 to 0.98; 0.985 cannot be seen |
+  | card photo zoom on hover 700 ms | 500 ms | hover happens tens of times a day |
+  | photo morph between pages 650 ms | 500 ms | big shared element, top of the 200 to 500 ms range |
+  | `transition-all` on the badge | `transition-colors` | name the properties |
+  | Ken Burns, grid drift and radar run forever on phones | off on phones and touch | endless decoration, battery and main thread, barely visible on a small screen |
+
+- **I decided:** apply every row (the mobile score stays at 68, accepted by Maor: see 148). Left as it was, and why: button press `scale(0.97)` with named properties and the brand pill (already as the skill says); hover is already limited to real mice (Tailwind v4's `hover:` uses `(hover: hover)`, the photo chips add the same query); only `transform` and `opacity` animate; reduced motion keeps content and layout; `--ease-out` is already the strong curve. **Not changed, for Maor to decide:** Ken Burns and the radar run forever on desktop too. By the skill's own test (decoration, seen constantly, no purpose) they are the first thing to cut, but the brief says the desktop look stays.
+- **Why:** motion should explain or confirm, never make you wait; the checks were the same 5 states at 375 and 1440 px, normal and reduced motion: no horizontal scroll, and in reduced motion nothing runs (`document.getAnimations()` is empty).
+- **Research:** the skill text only.
+
+### 150. Dead code, image modes, screenshots, contrast
+- **AI suggested:** delete only files with zero importers; fix the image modes; refresh only the screenshots whose look changed.
+- **I decided:** **files deleted: none.** I built the import graph from `src/app` (every static and dynamic import, `@/` and relative): every file in `src/components`, `src/components/motion` and `src/lib` is reached. `soil-gauge.tsx` is used by the plot page and itself uses `soil-tank.tsx`, so both stay. `public/images/*.jpg` go from 100755 to 644 (`chmod`, git records 100644 at commit). Screenshots: all 14 `375-*.png` (the radar is gone from the phone hero, and the phone shade changed) and all 15 `desktop-*.png` (the hero shade changed a little, see below) were regenerated with the same data and method as the originals (375 px and 1440 px, a fine pointer, no touch); only the same file names were overwritten. No screenshot is referenced in any README or doc, and no two files are identical, so none was removed.
+- **Why:** a file with an importer can still be needed later; two identical files would have been the only safe removal, and there were none.
+- **Research:** my contrast script (the pixels behind every text box with the text hidden, AA 4.5:1 and 3:1 for large text) found **one near-miss that was already there**: the soil-question subtitle on the diagonal-rows photo, 4.18:1 at 1440 px with reduced motion and 3.4:1 at 640 px. The original code gives the same values, so this pass did not cause it. **Maor decided to fix it with the smallest shade change.** Tested on `.hero-shade`: the middle stop 0.50 to 0.58 from 1024 px; from 640 to 1023 px a stronger right side too (middle 0.62, end 0.58, because the text runs almost the full width there); phones (up to 639 px) middle 0.58 to 0.60 (4.49:1 was 0.01 short). Smaller values were tried first and failed at 640 or 820 px (for example 0.54 gave 4.40:1). The look changes a little (the hero is slightly darker on the left): the `desktop-*` and `375-*` screenshots were regenerated for it.
+  **Result, the subtitle only, every pixel of the element, 4 checks:** 375 px normal 4.70:1 and reduced 4.68:1; 1440 px normal 5.39:1 and reduced 5.00:1 (need 4.5). **What is NOT proven:** the full matrix (9 states, 6 widths from 375 to 1920 px, both motion settings, 108 pages) did not finish on the final build. An earlier run of it passed 105 of 108 pages before the phone nudge; the 3 failures (1920 px, reduced motion) were capture problems of the script (a full-page screenshot lays the page out differently), and rechecked with viewport tiles they pass. The last run, after the script was rewritten, hung and was killed after 7 hours, so "0 below AA" is shown for the subtitle at 375 and 1440 px, not for every text on every page at every width.
+  **Two lessons:** (1) Turbopack's production cache served an old `globals.css` after I edited it (the built CSS still had the old shade); `rm -rf .next/cache/turbopack` fixed it, and I now check the built CSS for the new value before measuring. (2) Every long browser script gets a hard `timeout`. Also, plain headless Chromium reports no hover and no fine pointer (`hover: none`), so the cards showed their chips and Tilt was off; the screenshots now use `--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4`, like a real mouse.
+
+### 151. Same-session alternating comparison: SQLite vs PostgreSQL (2026-11-19)
+- **AI suggested:** close the open correction in entry 90 by measuring both databases in one session, alternating SQLite, PostgreSQL, three times each, with the same k6 script (10 rps per endpoint, 10 s warm-up not counted, 2 min measured) and the same rows. The SQLite side is the P1 code (commit 1c24610, a temporary git worktree, stdlib sqlite3); the PostgreSQL side is the current code. Report p50, p95 and max per run, and the median of the 3 p95s per side.
+- **I decided:** PostgreSQL runs only against `registry_test`, never `registry`. A small launcher outside the repo loaded the settings in-process, ran the `tests/pg_guard.py` checks, set `DATABASE_URL` to the test URL without printing it, and reseeded the database with `setup_db.run_setup` (the wipe is the same one the test fixture does). Both sides had 2 farms and 4 plots and returned identical JSON for the four GET endpoints before measuring. **Result, median of 3 p95, ms, SQLite / PostgreSQL:** farms list 23.5 / 32.2, farm by id 23.2 / 31.4, plots list 24.3 / 32.6, plot by id 23.8 / 32.2 (p50: 17 to 19 / 24 to 25). All 6 runs: 0 failed, 0 dropped, thresholds passed. Nothing committed; the worktree and temp dirs were removed. Full table, method and machine conditions: `services/registry-service/perf/results.txt`.
+- **Why:** *Alternating in one session:* host drift hits both sides alike (entry 62 saw 27 to 58 ms in one session; entry 90's 58 ms is from another day than the SQLite runs). *Median of 3:* one run varies (SQLite p95 was 23.1 to 27.6 ms across the 12 values). *The test database:* a load test must not run on, or wipe, the real `registry`; `registry_test` is the one database the repo already treats as disposable, and the guards run first. **Interpretation:** PostgreSQL is really slower, by about 8 ms at p95 (+35 %) and 7 ms at p50, in every run and every endpoint, with no overlap between the two sides. It is still far under the 100 ms target (about 3x headroom), so NFR-1.1 holds and no code change is needed. The 58 ms of entry 90 was not reproduced; host drift is the likely cause, but that run used the real `registry` database and the `registry_app` role, which I did not measure, so it is not proven. **Not isolated:** why PostgreSQL costs 8 ms more. The uvicorn process used about 45 s of CPU per run against about 34 s on SQLite, which fits more client-side work per request (loopback TCP, psycopg), but I did not test `pool_pre_ping` or anything else here (entry 62 found no effect from the pre-ping).
+- **Research:** none; measurement only (k6 `--summary-export` per-scenario metrics).
+
+### 152. Owner re-check of worked cases A, B and C (2026-11-20)
+- **AI suggested:** the worked cases in `decisions.md` are the tests' expected values. Case A was calculated by the owner; B and C were completed with the AI and needed the owner's check.
+- **I decided:** the owner re-checked cases A, B and C by hand, with Claude in chat, on 2026-11-20. The "must be re-checked" note in `decisions.md` is replaced by that line. No engine change.
+- **Why:** the tests assert these numbers, so a person has to check them, not the AI.
+- **Research:** none.
+
+### 153. Run minutes rounded up (ceil)
+- **AI suggested:** normal rounding of run minutes to the nearest minute.
+- **I decided:** `run_minutes = ceil(litres / system_flow_lph x 60)`, always rounded up; 0 when there is no irrigation.
+- **Why:** never under-irrigate. Rounding down can give the crop less water than the balance asks for. Examples: 851.4 becomes 852, 71.3 becomes 72. The cost is at most one minute per run.
+- **Research:** none. The engine already does this (`minutes_for` in `engine.py`; test `test_minutes_are_rounded_up`).
+
+### 154. New root layer at field capacity: depletion kept as the root zone deepens
+- **AI suggested:** when Zr grows, add the new layer's water to the depletion, as the new soil is dry.
+- **I decided:** depletion in mm is kept when Zr grows; only TAW grows. The new layer is assumed at field capacity. Depletion is still capped at the day's TAW. Known simplification.
+- **Why:** the effect is small: 175 x 0.20 / 65 ≈ 0.54 mm/day, and only until day 65. Drip wets a bulb below the roots. The planner is stateless and the grower re-reports soil_moisture each run, which corrects any drift.
+- **Research:** FAO-56 Ch. 8, Example 38 and its footnote 5, which assumes the subsoil is at field capacity (`services/planner-service/docs/research/fao56.md` §4). Drip root zone: see entry 111.
 ## Feature – plot area in dunams (feat/plot-area)
 
-### 43. No rounding of area_dunam
+### 155. No rounding of area_dunam
 - **Task:** tutorials/github_actions_intro.md section 3: `GET /v1/plots/{id}/area` returns `area_dunam = area_m2 / 1000`.
 - **Research:** tutorial section 3 (tutorials/github_actions_intro.md).
 - **AI suggested:** none; the spec's formula is taken as written.
@@ -257,13 +987,13 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 
 ## CI – pin actions
 
-### 44. Pin GitHub Actions to full commit SHAs
+### 156. Pin GitHub Actions to full commit SHAs
 - **AI suggested:** tutorial used floating tag setup-uv@v10.
 - **I decided:** pin both actions to full commit SHA with a version comment.
 - **Why:** CI failed "unable to find version v10" (setup-uv publishes only full version tags); SonarCloud quality gate failed "Use full commit SHA hash"; a SHA is immutable, a tag can be moved (supply-chain risk).
 - **Research:** setup-uv and checkout release pages; SHAs verified against the release commits.
 
-### 45. Install and test without building packages
+### 157. Install and test without building packages
 - **AI suggested:** tutorial commands "uv sync --locked" and "uv run pytest".
 - **I decided:** add --no-build to both and --locked to uv run.
 - **Why:** SonarCloud quality gate (Security Rating C): install scripts of third-party packages can run code in CI (supply-chain risk, rule S6505), and uv run without --locked may re-resolve versions. All our deps ship wheels, so no build is needed. Checked in uv.lock: all 32 packages have wheels, and pyproject.toml has no [build-system], so the project itself is not built either. Verified locally with the exact CI commands (`uv sync --locked --no-build && uv run --locked --no-build pytest`): 67 passed.
@@ -271,19 +1001,31 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 
 ## Coverage (feat/coverage)
 
-### 46. Testing error paths that only a race or a crash reaches
+### 158. Testing error paths that only a race or a crash reaches
 - **AI suggested:** mock the 500 handler and the IntegrityError race with monkeypatch.
 - **I decided:** mock, not a real thread race.
 - **Why:** a real race is non-deterministic (flaky); the guard exists for concurrency we can't reproduce reliably.
 - **Research:** tutorial Exercise A (monkeypatch).
 
-### 47. Coverage as a CI gate
+### 159. Coverage as a CI gate
 - **I decided:** fail_under=100 as a CI gate; upload the HTML report with `if: always()`; the action is pinned to a SHA.
-- **Why:** coverage can't silently drop; the report is available exactly when the run fails. Same supply-chain rule as entries 44 and 45.
+- **Why:** coverage can't silently drop; the report is available exactly when the run fails. Same supply-chain rule as entries 156 and 157.
 
 ## CI – dependency audit (feat/audit)
 
-### 48. Separate parallel audit job
+### 160. Separate parallel audit job
 - **I decided:** separate parallel "audit" job (`uv audit` vs OSV), same SHA pins as the test job.
 - **Why:** tests check our code; audit checks the third-party packages in uv.lock. Parallel = no extra wait. Local scan found 0 vulnerabilities in 33 packages.
 - **Research:** tutorial Exercise B.
+
+## Merge – origin/main into p2
+
+### 161. How origin/main was merged into p2
+- **AI suggested:** keep p2's SQLAlchemy layer and port main's additions onto it: `get_plot_area` takes SQLAlchemy's `Connection`, main's race and 500 tests hit the real SQLite errors through p2's `_write`, and the paths the 100% gate found uncovered each get a test.
+- **I decided:** renumbered main's duplicate 43–48 entries instead of p2's, because p2's numbers may already be referenced in the P2 PR and presentation.
+- **Why:** the only `sqlite3` use in the app was main's `get_plot_area` annotation, which broke import. Main's race test raised a raw `sqlite3.IntegrityError`, which p2 never raises, so it now provokes the real UNIQUE error. The "other IntegrityError is 500" test uses a NOT NULL error, because p2 maps a foreign-key error to 422 on purpose. Coverage does not see subprocess runs of `setup_db.py`, so `main()` is tested in-process with fake settings and no DB is touched. `PlotArea` fields got `ge=0` as `.claude/rules/registry-service.md` requires.
+- **Research:** `git diff p2...origin/main -- services/registry-service` (7 files, +247 lines). Local run with the CI commands (`uv sync --locked --no-build`, then `uv run --locked --no-build pytest --cov`, with `TEST_DATABASE_URL` empty): 198 passed, 100% coverage.
+- **Note (new `/health` tests):** 
+- **AI suggested:** reach the `/health` missing-table and DB-error branches with a real database error on both backends: swap the SQL that `db.text` runs (a missing table, a missing column), instead of marking the tests SQLite-only or dropping a table.
+- **I decided:** pending Maor
+- **Why:** both tests run on SQLite and PostgreSQL with no file damage and no teardown. Result on SQLite with the CI commands: 200 passed, 100% coverage. The PostgreSQL pass is still to be run.

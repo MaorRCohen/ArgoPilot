@@ -2,6 +2,8 @@ import uuid
 
 import pytest
 
+import main
+
 DEMO_FARM_ID = "b7e2c0a0-3c1d-4f0a-9a11-0c5d2e6f1001"  # seeded, has 2 plots
 EAST_FARM_ID = "a9c1e4b2-6f70-4d8e-a144-3f8b5c904004"  # seeded, has 2 plots
 FARM_FIELDS = {"id", "name"}
@@ -38,6 +40,26 @@ def test_get_farm(client):
 
 def test_get_unknown_farm(client, assert_problem):
     assert_problem(client.get("/v1/farms/no-such-farm"), 404, "NOT_FOUND")
+
+
+def test_farm_area_sums_plots(client):
+    response = client.get(f"/v1/farms/{DEMO_FARM_ID}/area")
+
+    assert response.status_code == 200
+    assert response.json() == {"farm_id": DEMO_FARM_ID, "total_area_m2": 1800.0}
+
+
+def test_farm_area_without_plots_is_zero(client):
+    farm_id = create_farm(client, "Empty farm").json()["id"]
+
+    response = client.get(f"/v1/farms/{farm_id}/area")
+
+    assert response.status_code == 200
+    assert response.json() == {"farm_id": farm_id, "total_area_m2": 0.0}
+
+
+def test_farm_area_unknown_farm(client, assert_problem):
+    assert_problem(client.get("/v1/farms/no-such-farm/area"), 404, "NOT_FOUND")
 
 
 def test_patch_farm_name_keeps_id(client):
@@ -110,3 +132,21 @@ def test_patch_farm_with_unknown_field(client, assert_problem):
     assert_problem(
         client.patch(f"/v1/farms/{DEMO_FARM_ID}", json={"nmae": "typo"}), 422, "VALIDATION"
     )
+
+
+def test_delete_farm_with_plots_is_409_not_500(client, assert_problem):
+    # The plots.farm_id foreign key would also block this; the count check must answer first with 409.
+    assert_problem(client.delete(f"/v1/farms/{EAST_FARM_ID}"), 409, "CONFLICT")
+    assert client.get(f"/v1/farms/{EAST_FARM_ID}").status_code == 200
+
+
+def test_delete_farm_that_gets_a_plot_in_the_race_is_409(client, assert_problem, monkeypatch):
+    # The plot count is skipped, as if a plot were added just before the delete.
+    # The real foreign key blocks the delete.
+    monkeypatch.setattr(main, "count_plots", lambda *args: 0)
+
+    response = client.delete(f"/v1/farms/{DEMO_FARM_ID}")
+
+    assert_problem(response, 409, "CONFLICT")
+    assert response.json()["detail"] == "farm has plots"
+    assert client.get(f"/v1/farms/{DEMO_FARM_ID}").status_code == 200
