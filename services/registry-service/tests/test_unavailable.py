@@ -1,5 +1,7 @@
 import pytest
+from sqlalchemy import text as sql_text
 
+import db
 import main
 
 
@@ -70,6 +72,37 @@ def test_unexpected_error_returns_500_without_leaking_message(
     assert_problem(response, 500, "UNAVAILABLE")
     assert response.json()["detail"] == "Internal server error"
     assert "boom" not in response.text
+
+
+@pytest.fixture
+def health_sql(monkeypatch):
+    # Swaps the SQL that /health runs, so the database itself raises a real error on either backend.
+    def use(sql: str) -> None:
+        monkeypatch.setattr(db, "text", lambda _original: sql_text(sql))
+
+    return use
+
+
+def test_health_with_missing_table_is_503_on_any_backend(client, health_sql, assert_problem):
+    health_sql("SELECT 1 FROM no_such_farms LIMIT 1")  # "no such table" on SQLite, 42P01 on PostgreSQL
+
+    response = client.get("/health")
+
+    assert_problem(response, 503, "UNAVAILABLE")
+    assert response.headers["Retry-After"] == "30"
+    assert response.json()["detail"] == "Database schema is missing: no farms table"
+    assert "no_such_farms" not in response.text
+
+
+def test_health_with_a_failing_query_is_500_on_any_backend(client, health_sql, assert_problem):
+    health_sql("SELECT no_such_column FROM farms LIMIT 1")  # a real error that is not a missing table
+
+    response = client.get("/health")
+
+    assert_problem(response, 500, "UNAVAILABLE")
+    assert response.json()["detail"] == "Internal server error"
+    assert "Retry-After" not in response.headers
+    assert "no_such_column" not in response.text
 
 
 def test_health_returns_ok(client):

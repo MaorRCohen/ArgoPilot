@@ -1025,3 +1025,7 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** renumbered main's duplicate 43–48 entries instead of p2's, because p2's numbers may already be referenced in the P2 PR and presentation.
 - **Why:** the only `sqlite3` use in the app was main's `get_plot_area` annotation, which broke import. Main's race test raised a raw `sqlite3.IntegrityError`, which p2 never raises, so it now provokes the real UNIQUE error. The "other IntegrityError is 500" test uses a NOT NULL error, because p2 maps a foreign-key error to 422 on purpose. Coverage does not see subprocess runs of `setup_db.py`, so `main()` is tested in-process with fake settings and no DB is touched. `PlotArea` fields got `ge=0` as `.claude/rules/registry-service.md` requires.
 - **Research:** `git diff p2...origin/main -- services/registry-service` (7 files, +247 lines). Local run with the CI commands (`uv sync --locked --no-build`, then `uv run --locked --no-build pytest --cov`, with `TEST_DATABASE_URL` empty): 198 passed, 100% coverage.
+- **Note (new `/health` tests):** 
+- **AI suggested:** reach the `/health` missing-table and DB-error branches with a real database error on both backends: swap the SQL that `db.text` runs (a missing table, a missing column), instead of marking the tests SQLite-only or dropping a table.
+- **I decided:** pending Maor
+- **Why:** both tests run on SQLite and PostgreSQL with no file damage and no teardown. Result on SQLite with the CI commands: 200 passed, 100% coverage. The PostgreSQL pass is still to be run.
