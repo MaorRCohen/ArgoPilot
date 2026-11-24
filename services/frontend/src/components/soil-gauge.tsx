@@ -3,22 +3,19 @@ import { Tilt } from "@/components/motion/tilt";
 import { Card } from "@/components/ui/card";
 import type { PlanView } from "@/lib/planner";
 
-/** The two numbers the gauge needs, or null: when one is missing the gauge is hidden, never guessed. */
-function gaugeValues(plan: PlanView): { water: number; trigger: number } | null {
+/** The water left after today's watering, or null: when it is missing the gauge is hidden, never guessed. */
+function gaugeWater(plan: PlanView): number | null {
   const pct = plan.days[0]?.soil_water_end_pct;
-  const trigger = plan.assumptions?.irrigate_when_depleted_pct;
-  if (!Number.isFinite(pct) || !Number.isFinite(trigger)) return null;
-  return { water: Math.min(100, Math.max(0, pct)), trigger };
+  if (!Number.isFinite(pct)) return null;
+  return Math.min(100, Math.max(0, pct));
 }
 
-/** Soil water at the end of today against the point where watering starts (30% of the water used). */
+/** Soil water at the end of today, after watering. It is not compared with the watering trigger. */
 export function SoilGauge({ plan }: { plan: PlanView }) {
-  const values = gaugeValues(plan);
-  if (!values) return null;
+  const water = gaugeWater(plan);
+  if (water === null) return null;
 
-  const { water, trigger } = values;
   const used = Math.round(100 - water);
-  const pastTrigger = 100 - water >= trigger;
 
   return (
     <Tilt className="rounded-xl" max={3} lift={5}>
@@ -26,24 +23,17 @@ export function SoilGauge({ plan }: { plan: PlanView }) {
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-8 lg:flex-col lg:items-stretch lg:gap-5">
           <SoilTank
             water={water}
-            trigger={trigger}
-            label={`Soil water at the end of today: ${Math.round(water)}%. ${used}% of the water is used; watering starts at ${trigger}% used.`}
+            label={`Soil water after today's watering: ${Math.round(water)}% left, ${used}% used.`}
           />
           <div className="min-w-0">
-            <h2 className="font-heading text-xl font-bold">Soil water</h2>
+            <h2 className="font-heading text-xl font-bold">Soil water after today&apos;s watering</h2>
             <p className="mt-1 text-muted-foreground">
-              {pastTrigger
-                ? `${used}% used, past the ${trigger}% where watering starts.`
-                : `${used}% used. Watering starts at ${trigger}%.`}
+              {Math.round(water)}% left, {used}% used.
             </p>
             <ul className="mt-3 space-y-1.5 text-sm">
               <li className="flex items-center gap-2">
                 <span aria-hidden className="h-1.5 w-6 rounded-full bg-leaf" />
-                Enough water
-              </li>
-              <li className="flex items-center gap-2">
-                <span aria-hidden className="h-1.5 w-6 rounded-full bg-water" />
-                Time to water
+                Water left in the soil
               </li>
             </ul>
           </div>

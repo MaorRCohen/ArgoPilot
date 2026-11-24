@@ -824,7 +824,7 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 
 ### 133. Gauge and week chart in inline SVG, no chart library
 - **AI suggested:** the task ruled out a chart library. The AI added: draw only from numbers the plan already returns, and hide a visual when a number it needs is missing (never zeros, as FR-2.8 does in the weather-service).
-- **I decided:** gauge = half dial of soil water at the end of today (0 to 100%) with a tick at the trigger (100 minus `irrigate_when_depleted_pct`, so 70%): leaf green above it, water blue at or below it. Chart = rain and irrigation as stacked bars, crop need as a line, ET0 as a dashed line, drawn twice from the same data (under 640 px and from 640 px) so the text keeps its size on screen. **Maor to confirm:** the task says "depletion vs the 30% trigger"; the gauge draws soil water, so it shows the same number as the answer card and the day bars, and says the depletion in words ("18% used. Watering starts at 30%.") and on the tick ("30% used").
+- **I decided:** gauge = half dial of soil water at the end of today (0 to 100%) with a tick at the trigger (100 minus `irrigate_when_depleted_pct`, so 70%): leaf green above it, water blue at or below it. Chart = rain and irrigation as stacked bars, crop need as a line, ET0 as a dashed line, drawn twice from the same data (under 640 px and from 640 px) so the text keeps its size on screen. **Resolved in entry 162:** the gauge no longer compares the end-of-day level with the trigger (no "Watering starts at" line, no tick).
 - **Why:** no new dependency (the allow-list is unchanged), server-rendered, nothing runs in the browser. Series differ by shape (line, dashes, hatch, solid), not only by colour. One number means one thing across the page.
 - **Research:** none. The dial and dash geometry were checked in Chromium.
 
@@ -1029,3 +1029,11 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **AI suggested:** reach the `/health` missing-table and DB-error branches with a real database error on both backends: swap the SQL that `db.text` runs (a missing table, a missing column), instead of marking the tests SQLite-only or dropping a table.
 - **I decided:** pending Maor
 - **Why:** both tests run on SQLite and PostgreSQL with no file damage and no teardown. Result on SQLite with the CI commands: 200 passed, 100% coverage. The PostgreSQL pass is still to be run.
+
+## Frontend – soil gauge label (fix-soil-gauge-label)
+
+### 162. Soil gauge shows the level after watering, without the trigger comparison
+- **AI suggested:** label the gauge as the end-of-day level (after today's watering) and drop the trigger comparison; the full before/after view goes to the Backlog.
+- **I decided:** the same. No "Watering starts at" line, no tick on the tank, one leaf-green colour with one legend item. The planner API and engine are unchanged.
+- **Why:** the gauge compared the post-watering level with the morning trigger, so a correct irrigation looked wrong ("4% used. Watering starts at 30%." after a 30 mm irrigation). The trigger tests the morning depletion (entry 111), which the API does not return yet (Backlog).
+- **Research:** `services/planner-service/engine.py:226` (start depletion), `:241-242` (trigger on the morning value), `:267` (end level).

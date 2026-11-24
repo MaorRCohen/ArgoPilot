@@ -32,19 +32,15 @@ const WAVE_B = { fill: wave(2.2, true), crest: wave(2.2, false) };
 
 /**
  * Soil water as a tank of liquid: the level is the percentage, the surface moves in two slow waves, and the level
- * rises on a spring when the card scrolls into view. The tick is where watering starts (100 minus the trigger).
- * Liquid is leaf green while there is enough water and water blue at or below the trigger.
+ * rises on a spring when the card scrolls into view. The liquid is always leaf green: it shows the water left, and it is
+ * not compared with the watering trigger.
  */
-export function SoilTank({ water, trigger, label }: { water: number; trigger: number; label: string }) {
+export function SoilTank({ water, label }: { water: number; label: string }) {
   const ref = useRef<SVGSVGElement>(null);
   const state = useReveal(ref, "0px 0px -5% 0px");
   const hidden = state === "hidden";
 
-  const pastTrigger = 100 - water >= trigger;
-  const tone = pastTrigger ? "water" : "leaf";
   const levelY = BOTTOM - (TH * water) / 100;
-  const triggerAt = (100 - trigger) / 100;
-  const triggerY = BOTTOM - TH * triggerAt;
 
   return (
     <svg
@@ -73,39 +69,18 @@ export function SoilTank({ water, trigger, label }: { water: number; trigger: nu
                 : { y: 0, transition: { type: "spring", duration: 1.2, bounce: 0.2, delay: 0.4 } }
             }
           >
-            <g className={`wave-slow ${tone === "water" ? "fill-water" : "fill-leaf"}`} opacity="0.16">
+            <g className="wave-slow fill-leaf" opacity="0.16">
               <path d={WAVE_B.fill} />
             </g>
             <g className="wave">
-              <path d={WAVE_A.fill} className={tone === "water" ? "fill-water" : "fill-leaf"} opacity="0.24" />
-              <path
-                d={WAVE_A.crest}
-                fill="none"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                className={tone === "water" ? "stroke-water" : "stroke-leaf"}
-              />
+              <path d={WAVE_A.fill} className="fill-leaf" opacity="0.24" />
+              <path d={WAVE_A.crest} fill="none" strokeWidth="2.5" strokeLinecap="round" className="stroke-leaf" />
             </g>
           </m.g>
         </g>
       </g>
 
       <rect x={TX} y={TY} width={TW} height={TH} rx={RX} fill="none" strokeWidth="2" className="stroke-input" />
-
-      {/* the trigger: below this line the soil needs water */}
-      <line
-        x1={TX - 8}
-        y1={triggerY}
-        x2={TX + TW + 8}
-        y2={triggerY}
-        strokeWidth="3"
-        strokeLinecap="round"
-        strokeDasharray="2 7"
-        className="stroke-foreground"
-      />
-      <text x={TX - 12} y={triggerY + 4.5} textAnchor="end" fontSize="13" fontWeight="600" className="fill-foreground">
-        {trigger}% used
-      </text>
 
       {/* a dark window behind the number: the moving surface of the liquid can never run through the digits */}
       <rect
@@ -137,7 +112,7 @@ export function SoilTank({ water, trigger, label }: { water: number; trigger: nu
       <text x={TX - 12} y={TY + 9} textAnchor="end" fontSize="12.5" className="fill-muted-foreground">
         100%
       </text>
-      <title>{`${Math.round(water)}% soil water left at the end of today`}</title>
+      <title>{`${Math.round(water)}% soil water left after today's watering`}</title>
     </svg>
   );
 }
