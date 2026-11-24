@@ -976,3 +976,52 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** depletion in mm is kept when Zr grows; only TAW grows. The new layer is assumed at field capacity. Depletion is still capped at the day's TAW. Known simplification.
 - **Why:** the effect is small: 175 x 0.20 / 65 ≈ 0.54 mm/day, and only until day 65. Drip wets a bulb below the roots. The planner is stateless and the grower re-reports soil_moisture each run, which corrects any drift.
 - **Research:** FAO-56 Ch. 8, Example 38 and its footnote 5, which assumes the subsoil is at field capacity (`services/planner-service/docs/research/fao56.md` §4). Drip root zone: see entry 111.
+## Feature – plot area in dunams (feat/plot-area)
+
+### 155. No rounding of area_dunam
+- **Task:** tutorials/github_actions_intro.md section 3: `GET /v1/plots/{id}/area` returns `area_dunam = area_m2 / 1000`.
+- **Research:** tutorial section 3 (tutorials/github_actions_intro.md).
+- **AI suggested:** none; the spec's formula is taken as written.
+- **I decided:** no rounding of area_dunam.
+- **Why:** the spec defines area_m2 / 1000, rounding would lose information, and it is easy to explain.
+
+## CI – pin actions
+
+### 156. Pin GitHub Actions to full commit SHAs
+- **AI suggested:** tutorial used floating tag setup-uv@v10.
+- **I decided:** pin both actions to full commit SHA with a version comment.
+- **Why:** CI failed "unable to find version v10" (setup-uv publishes only full version tags); SonarCloud quality gate failed "Use full commit SHA hash"; a SHA is immutable, a tag can be moved (supply-chain risk).
+- **Research:** setup-uv and checkout release pages; SHAs verified against the release commits.
+
+### 157. Install and test without building packages
+- **AI suggested:** tutorial commands "uv sync --locked" and "uv run pytest".
+- **I decided:** add --no-build to both and --locked to uv run.
+- **Why:** SonarCloud quality gate (Security Rating C): install scripts of third-party packages can run code in CI (supply-chain risk, rule S6505), and uv run without --locked may re-resolve versions. All our deps ship wheels, so no build is needed. Checked in uv.lock: all 32 packages have wheels, and pyproject.toml has no [build-system], so the project itself is not built either. Verified locally with the exact CI commands (`uv sync --locked --no-build && uv run --locked --no-build pytest`): 67 passed.
+- **Research:** SonarSource rule RSPEC-6505; uv docs.
+
+## Coverage (feat/coverage)
+
+### 158. Testing error paths that only a race or a crash reaches
+- **AI suggested:** mock the 500 handler and the IntegrityError race with monkeypatch.
+- **I decided:** mock, not a real thread race.
+- **Why:** a real race is non-deterministic (flaky); the guard exists for concurrency we can't reproduce reliably.
+- **Research:** tutorial Exercise A (monkeypatch).
+
+### 159. Coverage as a CI gate
+- **I decided:** fail_under=100 as a CI gate; upload the HTML report with `if: always()`; the action is pinned to a SHA.
+- **Why:** coverage can't silently drop; the report is available exactly when the run fails. Same supply-chain rule as entries 156 and 157.
+
+## CI – dependency audit (feat/audit)
+
+### 160. Separate parallel audit job
+- **I decided:** separate parallel "audit" job (`uv audit` vs OSV), same SHA pins as the test job.
+- **Why:** tests check our code; audit checks the third-party packages in uv.lock. Parallel = no extra wait. Local scan found 0 vulnerabilities in 33 packages.
+- **Research:** tutorial Exercise B.
+
+## Merge – origin/main into p2
+
+### 161. How origin/main was merged into p2
+- **AI suggested:** keep p2's SQLAlchemy layer and port main's additions onto it: `get_plot_area` takes SQLAlchemy's `Connection`, main's race and 500 tests hit the real SQLite errors through p2's `_write`, and the paths the 100% gate found uncovered each get a test.
+- **I decided:** renumbered main's duplicate 43–48 entries instead of p2's, because p2's numbers may already be referenced in the P2 PR and presentation.
+- **Why:** the only `sqlite3` use in the app was main's `get_plot_area` annotation, which broke import. Main's race test raised a raw `sqlite3.IntegrityError`, which p2 never raises, so it now provokes the real UNIQUE error. The "other IntegrityError is 500" test uses a NOT NULL error, because p2 maps a foreign-key error to 422 on purpose. Coverage does not see subprocess runs of `setup_db.py`, so `main()` is tested in-process with fake settings and no DB is touched. `PlotArea` fields got `ge=0` as `.claude/rules/registry-service.md` requires.
+- **Research:** `git diff p2...origin/main -- services/registry-service` (7 files, +247 lines). Local run with the CI commands (`uv sync --locked --no-build`, then `uv run --locked --no-build pytest --cov`, with `TEST_DATABASE_URL` empty): 198 passed, 100% coverage.

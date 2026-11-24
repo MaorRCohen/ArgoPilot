@@ -19,6 +19,7 @@ package = false
 dev = [
     "httpx2>=2.16.0",
     "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
     "time-machine>=3.6.0",
 ]
 
@@ -26,3 +27,12 @@ dev = [
 pythonpath = ["."]
 testpaths = ["tests"]
 markers = ["sqlite_only: needs the SQLite backend (file-based behaviour)"]
+
+[tool.coverage.run]
+branch = true
+source = ["."]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 100

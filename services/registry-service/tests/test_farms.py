@@ -2,6 +2,8 @@ import uuid
 
 import pytest
 
+import main
+
 DEMO_FARM_ID = "b7e2c0a0-3c1d-4f0a-9a11-0c5d2e6f1001"  # seeded, has 2 plots
 EAST_FARM_ID = "a9c1e4b2-6f70-4d8e-a144-3f8b5c904004"  # seeded, has 2 plots
 FARM_FIELDS = {"id", "name"}
@@ -136,3 +138,15 @@ def test_delete_farm_with_plots_is_409_not_500(client, assert_problem):
     # The plots.farm_id foreign key would also block this; the count check must answer first with 409.
     assert_problem(client.delete(f"/v1/farms/{EAST_FARM_ID}"), 409, "CONFLICT")
     assert client.get(f"/v1/farms/{EAST_FARM_ID}").status_code == 200
+
+
+def test_delete_farm_that_gets_a_plot_in_the_race_is_409(client, assert_problem, monkeypatch):
+    # The plot count is skipped, as if a plot were added just before the delete.
+    # The real foreign key blocks the delete.
+    monkeypatch.setattr(main, "count_plots", lambda *args: 0)
+
+    response = client.delete(f"/v1/farms/{DEMO_FARM_ID}")
+
+    assert_problem(response, 409, "CONFLICT")
+    assert response.json()["detail"] == "farm has plots"
+    assert client.get(f"/v1/farms/{DEMO_FARM_ID}").status_code == 200

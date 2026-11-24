@@ -1,14 +1,19 @@
 import os
+import runpy
 import sqlite3
 import subprocess
 import sys
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy.exc import IntegrityError
 
+import config
 import setup_db
+from config import SettingsError
 from setup_db import run_setup
 
 SERVICE_DIR = Path(__file__).resolve().parent.parent
@@ -111,3 +116,63 @@ def test_missing_owner_url_is_named_and_password_never_printed(tmp_path):
     assert result.returncode == 1
     assert "DATABASE_OWNER_URL" in result.stderr
     assert secret not in result.stdout + result.stderr
+
+
+def test_postgres_engine_gets_no_sqlite_hooks():
+    # create_engine does not connect, so no database is touched here.
+    engine = setup_db.make_engine("postgresql+psycopg://u:p@localhost:1/none")
+
+    assert engine.dialect.name == "postgresql"
+    engine.dispose()
+
+
+def test_main_names_a_missing_database_url(monkeypatch, capsys):
+    def no_settings():
+        raise SettingsError("DATABASE_URL: missing")
+
+    monkeypatch.setattr(setup_db, "get_settings", no_settings)
+
+    assert setup_db.main() == 1
+    assert "DATABASE_URL: missing" in capsys.readouterr().err
+
+
+def test_main_without_owner_url_exits_1(monkeypatch, capsys):
+    monkeypatch.setattr(setup_db, "get_settings", lambda: SimpleNamespace(database_owner_url=None))
+
+    assert setup_db.main() == 1
+    assert "DATABASE_OWNER_URL is not set" in capsys.readouterr().err
+
+
+def test_main_prints_counts_for_a_good_setup(tmp_path, monkeypatch, capsys):
+    url = f"sqlite:///{tmp_path / 'main.db'}"
+    monkeypatch.setattr(
+        setup_db, "get_settings", lambda: SimpleNamespace(database_owner_url=SecretStr(url))
+    )
+
+    assert setup_db.main() == 0
+    assert "total: 15" in capsys.readouterr().out
+    assert total_rows(tmp_path / "main.db") == 15
+
+
+def test_main_reports_a_failed_setup_and_saves_nothing(tmp_path, monkeypatch, capsys):
+    db = tmp_path / "failed-main.db"
+    plots = setup_db.SEED_ROWS["plots"]
+    broken = {**setup_db.SEED_ROWS, "plots": [*plots[:3], {**plots[3], "crop_id": "no-such-crop"}]}
+    monkeypatch.setattr(setup_db, "SEED_ROWS", broken)
+    monkeypatch.setattr(
+        setup_db, "get_settings", lambda: SimpleNamespace(database_owner_url=SecretStr(f"sqlite:///{db}"))
+    )
+
+    assert setup_db.main() == 1
+    assert "Setup failed, nothing was saved" in capsys.readouterr().err
+    assert table_names(db) == []
+
+
+def test_script_entry_point_exits_with_main_result(monkeypatch):
+    # Runs setup_db.py as a script in this process. The owner URL is unset, so nothing is connected.
+    monkeypatch.setattr(config, "_settings", SimpleNamespace(database_owner_url=None))
+
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(SETUP_SCRIPT), run_name="__main__")
+
+    assert exit_info.value.code == 1

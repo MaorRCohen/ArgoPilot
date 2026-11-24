@@ -1,3 +1,4 @@
+import importlib.util
 import logging
 import os
 import subprocess
@@ -209,6 +210,21 @@ def test_env_var_sets_the_engine_in_a_fresh_process(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == f"file:{env_db}"
+
+
+def test_importing_db_again_adds_no_second_log_handler():
+    # db.py adds its handler only when the logger has none. Run its module code again, as a separate module.
+    logger = logging.getLogger("db")
+    before = list(logger.handlers)
+    spec = importlib.util.spec_from_file_location("db", db.__file__)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert logger.handlers == before
+
+
+def test_get_settings_is_read_once():
+    assert config.get_settings() is config.get_settings()
 
 
 def test_log_has_scheme_only(caplog):
