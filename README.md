@@ -22,3 +22,4 @@ Feature ideas outside the task spec. Per the instructor's rule, every such idea 
 - **Observer/notifications.** Notify the grower when a new forecast changes the plan (not needed now: everything is request/response).
 - **Grower override of the daily recommendation.** The grower can change today's run time (for example, after a local rain the forecast missed). The override is stored and shown next to the calculated value, so the engine's numbers stay untouched and auditable. Needs: an overrides table, an endpoint in planner-service, and an edit control on the plot page.
 - Add numeric constraints (ge/gt) to the Plot response model, matching PlotArea and the registry rule (docs/Swagger only — input is already validated by FR-1.3).
+- Planner API: return morning depletion so the gauge can show before/after watering.
