@@ -15,7 +15,7 @@ from sqlalchemy import Connection
 from sqlalchemy.exc import DBAPIError
 from timezonefinder import TimezoneFinder
 
-from config import get_settings
+from config import get_settings, is_account_id
 
 from db import (
     ForeignKeyViolation,
@@ -73,9 +73,19 @@ def check_plot_photos_table() -> None:
         logger.error("plot_photos table missing - run migrations/001_plot_photos.sql")
 
 
+def check_bucket_owner_setting() -> None:
+    # A malformed owner is logged, never printed, and treated as missing: the service still starts.
+    owner = get_settings().aws_s3_bucket_owner
+    if owner and not is_account_id(owner):
+        logger.error(
+            "AWS_S3_BUCKET_OWNER must be exactly 12 digits; photo endpoints answer 503 until it is fixed"
+        )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     check_plot_photos_table()
+    check_bucket_owner_setting()
     yield
 
 
@@ -175,34 +185,52 @@ def check_photo(data: bytes, declared: str | None) -> str:
     return detected
 
 
-def photo_bucket() -> str:
+def bucket_owner() -> str | None:
+    owner = get_settings().aws_s3_bucket_owner
+    return owner if owner and is_account_id(owner) else None
+
+
+def s3_scope() -> dict[str, str]:
+    # The one place S3 calls get their bucket. ExpectedBucketOwner makes S3 refuse a bucket that
+    # someone else created with the same name: bucket names are global.
     bucket = get_settings().aws_s3_bucket
-    if not bucket:
+    owner = bucket_owner()
+    if not bucket or owner is None:
         raise ApiError(503, "UNAVAILABLE", "Photo storage is not configured", RETRY_HEADERS)
-    return bucket
+    return {"Bucket": bucket, "ExpectedBucketOwner": owner}
 
 
-def photo_unavailable(exc: BotoCoreError | ClientError, action: str, key: str) -> ApiError:
-    logger.error("S3 %s failed for %s", action, key, exc_info=exc)
+def photo_unavailable(exc: BotoCoreError | ClientError, action: str, plot_id: str) -> ApiError:
+    # Only validated values and the exception class reach the log. Never the request, and never the
+    # exception message, which can repeat request data.
+    if isinstance(exc, ClientError) and exc.response["Error"]["Code"] == "AccessDenied":
+        logger.error(
+            "S3 %s refused with AccessDenied for plot %s: bucket owner mismatch or missing permission (%s)",
+            action, plot_id, type(exc).__name__,
+        )
+    else:
+        logger.error("S3 %s failed for plot %s (%s)", action, plot_id, type(exc).__name__)
     return ApiError(503, "UNAVAILABLE", "Photo storage unavailable", RETRY_HEADERS)
 
 
-def put_photo(s3: BaseClient, bucket: str, key: str, data: bytes, content_type: str) -> None:
+def put_photo(
+    s3: BaseClient, scope: dict[str, str], plot_id: str, key: str, data: bytes, content_type: str
+) -> None:
     try:
-        s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
+        s3.put_object(**scope, Key=key, Body=data, ContentType=content_type)
     except (BotoCoreError, ClientError) as exc:
-        raise photo_unavailable(exc, "put_object", key)
+        raise photo_unavailable(exc, "put_object", plot_id)
 
 
-def fetch_photo(s3: BaseClient, bucket: str, key: str) -> bytes:
+def fetch_photo(s3: BaseClient, scope: dict[str, str], plot_id: str, key: str) -> bytes:
     try:
-        return s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+        return s3.get_object(**scope, Key=key)["Body"].read()
     except ClientError as exc:
         if exc.response["Error"]["Code"] == "NoSuchKey":
             raise ApiError(404, "NOT_FOUND", "Photo not found")
-        raise photo_unavailable(exc, "get_object", key)
+        raise photo_unavailable(exc, "get_object", plot_id)
     except BotoCoreError as exc:
-        raise photo_unavailable(exc, "get_object", key)
+        raise photo_unavailable(exc, "get_object", plot_id)
 
 
 @app.get("/health")
@@ -332,13 +360,15 @@ def remove_plot(plot_id: str, conn: Connection = Depends(get_db)) -> None:
 
 @app.get("/v1/plots/{plot_id}/photo")
 def read_plot_photo(
-    plot_id: str, conn: Connection = Depends(get_db), s3: BaseClient = Depends(get_s3)
+    plot_id: uuid.UUID, conn: Connection = Depends(get_db), s3: BaseClient = Depends(get_s3)
 ) -> Response:
-    get_plot_or_404(conn, plot_id)
-    photo = get_plot_photo(conn, plot_id)
+    # plot_id is a UUID, so FastAPI rejects anything else with a 422 before this code runs.
+    pid = str(plot_id)
+    get_plot_or_404(conn, pid)
+    photo = get_plot_photo(conn, pid)
     if photo is None:
         raise ApiError(404, "NOT_FOUND", "Photo not found")
-    data = fetch_photo(s3, photo_bucket(), photo["key"])
+    data = fetch_photo(s3, s3_scope(), pid, photo["key"])
     # The type is the one stored in our DB, never the one S3 returns. nosniff stops browsers guessing.
     return Response(
         content=data, media_type=photo["content_type"], headers={"X-Content-Type-Options": "nosniff"}
@@ -347,20 +377,21 @@ def read_plot_photo(
 
 @app.post("/v1/plots/{plot_id}/photo", status_code=201, response_model=PlotPhoto)
 def upload_plot_photo(
-    plot_id: str,
+    plot_id: uuid.UUID,
     file: UploadFile,
     conn: Connection = Depends(get_db),
     s3: BaseClient = Depends(get_s3),
 ) -> dict:
-    plot = get_plot_or_404(conn, plot_id)
+    pid = str(plot_id)  # a UUID: FastAPI rejects anything else with a 422 first
+    plot = get_plot_or_404(conn, pid)
     # One byte past the limit is enough to know the file is too large; never read more than that.
     data = file.file.read(MAX_PHOTO_BYTES + 1)
     content_type = check_photo(data, file.content_type)
-    bucket = photo_bucket()
-    key = f"{plot['farm_id']}/{plot_id}/photo"
-    put_photo(s3, bucket, key, data, content_type)  # S3 first: if it fails, the DB row is not touched
-    upsert_plot_photo(conn, plot_id, key, content_type)
-    return {"plot_id": plot_id, "key": key, "content_type": content_type}
+    scope = s3_scope()
+    key = f"{plot['farm_id']}/{pid}/photo"
+    put_photo(s3, scope, pid, key, data, content_type)  # S3 first: if it fails, the DB row is not touched
+    upsert_plot_photo(conn, pid, key, content_type)
+    return {"plot_id": pid, "key": key, "content_type": content_type}
 
 
 @app.get("/v1/crops", response_model=list[Crop])

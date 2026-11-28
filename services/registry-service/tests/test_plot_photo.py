@@ -17,6 +17,7 @@ from main import app, get_s3
 
 # Seeded plot "North block" (in the Demo cooperative). Synthetic bytes only: no image files, no AWS.
 BUCKET = "test-bucket"
+OWNER = "111122223333"  # AWS's documentation example account id, not a real one
 NORTH_BLOCK_ID = "c8f3d1b0-4d2e-5a1b-8b22-1d6e3f702002"
 MISSING_PLOT_ID = "00000000-0000-4000-8000-000000000000"
 KEY = "b7e2c0a0-3c1d-4f0a-9a11-0c5d2e6f1001/c8f3d1b0-4d2e-5a1b-8b22-1d6e3f702002/photo"
@@ -60,27 +61,43 @@ def broken_s3():
     app.dependency_overrides.pop(get_s3, None)
 
 
+def set_bucket_env(monkeypatch, bucket=BUCKET, owner=OWNER):
+    # Environment variables beat .env, so these values are the ones the next get_settings() reads.
+    monkeypatch.setenv("AWS_S3_BUCKET", bucket)
+    monkeypatch.setenv("AWS_S3_BUCKET_OWNER", owner)
+    monkeypatch.setattr(config, "_settings", None)
+
+
 @pytest.fixture
 def bucket(monkeypatch):
-    monkeypatch.setenv("AWS_S3_BUCKET", BUCKET)
-    monkeypatch.setattr(config, "_settings", None)  # the next get_settings() reads the variable
+    set_bucket_env(monkeypatch)
 
 
 @pytest.fixture
 def no_bucket(monkeypatch):
-    monkeypatch.setenv("AWS_S3_BUCKET", "")  # empty counts as not configured
-    monkeypatch.setattr(config, "_settings", None)
+    set_bucket_env(monkeypatch, bucket="")  # empty counts as not configured
 
 
-def upload(client, data=PNG, content_type="image/png", plot_id=NORTH_BLOCK_ID):
-    return client.post(f"/v1/plots/{plot_id}/photo", files={"file": ("photo", data, content_type)})
+@pytest.fixture
+def no_owner(monkeypatch):
+    set_bucket_env(monkeypatch, owner="")
+
+
+def upload(client, data=PNG, content_type="image/png", plot_id=NORTH_BLOCK_ID, filename="photo"):
+    return client.post(f"/v1/plots/{plot_id}/photo", files={"file": (filename, data, content_type)})
 
 
 def expect_put(s3, data, content_type="image/png"):
     s3.add_response(
         "put_object",
         {},
-        {"Bucket": BUCKET, "Key": KEY, "Body": data, "ContentType": content_type},
+        {
+            "Bucket": BUCKET,
+            "ExpectedBucketOwner": OWNER,
+            "Key": KEY,
+            "Body": data,
+            "ContentType": content_type,
+        },
     )
 
 
@@ -89,7 +106,7 @@ def expect_get(s3, data, s3_content_type="application/octet-stream"):
     s3.add_response(
         "get_object",
         {"Body": StreamingBody(io.BytesIO(data), len(data)), "ContentType": s3_content_type},
-        {"Bucket": BUCKET, "Key": KEY},
+        {"Bucket": BUCKET, "ExpectedBucketOwner": OWNER, "Key": KEY},
     )
 
 
@@ -144,7 +161,11 @@ def test_second_upload_overwrites_the_first(client, s3, bucket):
 
 def test_upload_of_exactly_5_mb_is_accepted(client, s3, bucket):
     data = JPEG + bytes(FIVE_MB - len(JPEG))
-    s3.add_response("put_object", {}, {"Bucket": BUCKET, "Key": KEY, "Body": ANY, "ContentType": "image/jpeg"})
+    s3.add_response(
+        "put_object",
+        {},
+        {"Bucket": BUCKET, "ExpectedBucketOwner": OWNER, "Key": KEY, "Body": ANY, "ContentType": "image/jpeg"},
+    )
 
     response = upload(client, data, "image/jpeg")
 
@@ -206,10 +227,19 @@ def test_request_without_a_file_field_is_422(client, s3, bucket, assert_problem)
     assert_problem(response, 422, "VALIDATION")
 
 
+def test_plot_id_that_is_not_a_uuid_is_422_before_anything_else(client, s3, bucket, assert_problem):
+    # The CR/LF is percent-encoded: the path is rejected as a UUID, so nothing is looked up or logged.
+    response = upload(client, PNG, "image/png", plot_id="not-a-uuid%0D%0AFORGED")
+
+    assert_problem(response, 422, "VALIDATION")
+
+
 # --- POST: S3 and configuration failures -----------------------------------------------------
 
 
-def test_s3_error_is_503_and_the_stored_row_is_unchanged(client, s3, bucket, caplog):
+def test_s3_access_denied_is_503_with_the_row_unchanged_and_logs_the_owner_check(
+    client, s3, bucket, caplog
+):
     expect_put(s3, PNG)
     assert upload(client, PNG, "image/png").status_code == 201
     s3.add_client_error("put_object", service_error_code="AccessDenied", http_status_code=403)
@@ -221,7 +251,31 @@ def test_s3_error_is_503_and_the_stored_row_is_unchanged(client, s3, bucket, cap
     assert response.json()["code"] == "UNAVAILABLE"
     assert response.headers["Retry-After"] == "30"
     assert photo_rows() == [(KEY, "image/png")]
-    assert "S3 put_object failed" in caplog.text
+    assert "bucket owner mismatch" in caplog.text
+    assert "Traceback" not in caplog.text  # class name only, never the exception text
+
+
+def test_other_s3_error_is_503_and_logs_the_class_not_the_owner_message(client, s3, bucket, caplog):
+    s3.add_client_error("put_object", service_error_code="InternalError", http_status_code=500)
+
+    with caplog.at_level(logging.ERROR):
+        response = upload(client)
+
+    assert response.status_code == 503
+    assert "bucket owner mismatch" not in caplog.text
+    assert "ClientError" in caplog.text
+
+
+def test_log_never_contains_a_value_from_the_request(client, s3, bucket, caplog):
+    # The filename is raw request input: it must not reach the log, not even with a CR/LF in it.
+    s3.add_client_error("put_object", service_error_code="AccessDenied", http_status_code=403)
+
+    with caplog.at_level(logging.ERROR):
+        response = upload(client, PNG, "image/png", filename="photo\r\nFORGED LOG LINE.png")
+
+    assert response.status_code == 503
+    assert "FORGED" not in caplog.text
+    assert "\r" not in caplog.text
 
 
 def test_missing_aws_credentials_is_503(client, broken_s3, bucket, assert_problem):
@@ -237,6 +291,35 @@ def test_missing_bucket_setting_is_503_and_no_s3_call(client, s3, no_bucket, ass
 
     assert_problem(response, 503, "UNAVAILABLE")
     assert response.json()["detail"] == "Photo storage is not configured"
+
+
+def test_missing_owner_setting_is_503_and_no_s3_call(client, s3, no_owner, assert_problem):
+    response = upload(client)
+
+    assert_problem(response, 503, "UNAVAILABLE")
+    assert response.json()["detail"] == "Photo storage is not configured"
+    assert response.headers["Retry-After"] == "30"
+
+
+@pytest.mark.parametrize("owner", ["12345", "1234567890123", "12345678901a"])
+def test_owner_that_is_not_12_digits_is_treated_as_missing(client, s3, monkeypatch, assert_problem, owner):
+    set_bucket_env(monkeypatch, owner=owner)
+
+    response = upload(client)
+
+    assert_problem(response, 503, "UNAVAILABLE")
+    assert response.json()["detail"] == "Photo storage is not configured"
+
+
+def test_startup_logs_an_error_for_an_invalid_owner_and_keeps_running(backend, monkeypatch, caplog):
+    set_bucket_env(monkeypatch, owner="BAD-OWNER-VALUE")
+
+    with caplog.at_level(logging.ERROR):
+        with TestClient(app):  # must not raise
+            pass
+
+    assert "AWS_S3_BUCKET_OWNER must be exactly 12 digits" in caplog.text
+    assert "BAD-OWNER-VALUE" not in caplog.text  # the value is never printed
 
 
 # --- GET /v1/plots/{id}/photo ----------------------------------------------------------------
@@ -267,6 +350,12 @@ def test_get_unknown_plot_is_404(client, s3, bucket, assert_problem):
 
     assert_problem(response, 404, "NOT_FOUND")
     assert response.json()["detail"] == "Plot not found"
+
+
+def test_get_plot_id_that_is_not_a_uuid_is_422(client, s3, bucket, assert_problem):
+    response = client.get("/v1/plots/not-a-uuid%0D%0AFORGED/photo")
+
+    assert_problem(response, 422, "VALIDATION")
 
 
 def test_get_plot_without_a_photo_is_404(client, s3, bucket, assert_problem):

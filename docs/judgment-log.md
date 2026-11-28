@@ -1081,3 +1081,15 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** add `python-multipart` with `uv add` (pyproject.toml and uv.lock updated), instead of parsing the upload by hand.
 - **Why:** FastAPI raises `Form data requires "python-multipart" to be installed` when the route is registered, so the app would not start without it. A maintained parser is safer than hand-written multipart parsing.
 - **Research:** FastAPI request files documentation. Checked locally: registering a route with `UploadFile` failed before the install and works after it.
+
+### 170. ExpectedBucketOwner from a third variable, checked by format
+- **AI suggested:** SonarCloud (PR #12, High, "Add the 'ExpectedBucketOwner' parameter") on the S3 calls.
+- **I decided:** a third setting, `AWS_S3_BUCKET_OWNER` (after `AWS_S3_BUCKET` and `AWS_REGION`), which must be exactly 12 digits. One helper returns `{Bucket, ExpectedBucketOwner}` for every S3 call. A malformed value is logged at startup, never printed, and treated as missing (503). An `AccessDenied` is logged as a possible bucket owner mismatch and stays 503; `NoSuchKey` stays 404.
+- **Why:** bucket names are global. If the bucket were deleted and someone else created one with the same name, the app would send growers' photos to a stranger, and `ExpectedBucketOwner` makes S3 refuse that. Alternatives: an STS lookup per request (an extra call and an IAM permission the spec does not list), or hard-coding the id (wrong for any other account). A format check catches typos without calling AWS. `AccessDenied` can also mean a missing permission, so the log says both.
+- **Research:** SonarCloud finding on PR #12. AWS S3 documentation: bucket owner condition (`x-amz-expected-bucket-owner`).
+
+### 171. Log only validated values and the exception class
+- **AI suggested:** SonarCloud (PR #12, Low, "Log Injection via HTTP request") on the S3 error log.
+- **I decided:** the photo routes take the plot id as a UUID, so FastAPI rejects other input with the usual 422 before any code runs. The S3 error log holds only the plot id and the exception class name: no request values, no filename, no headers, no exception message. Other routes and their Problem responses are unchanged.
+- **Why:** the old log wrote the exception message and the S3 key. A CR/LF in a path or a filename could forge a log line. `test_log_never_contains_a_value_from_the_request` sends a filename with CR/LF and checks it never reaches the log.
+- **Research:** CWE-117 (log injection). OWASP Logging Cheat Sheet: log validated data, never raw input.

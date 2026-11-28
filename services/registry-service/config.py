@@ -1,5 +1,6 @@
 """The only place that reads settings. Values are checked once, at startup."""
 
+import re
 from pathlib import Path
 
 from pydantic import SecretStr, ValidationError, field_validator
@@ -13,6 +14,12 @@ ENV_FILE = SERVICE_DIR / ".env"
 # SQLAlchemy backend names. "postgresql+psycopg" has backend "postgresql".
 ALLOWED_BACKENDS = ("sqlite", "postgresql")
 URL_RULE = "must start with sqlite:// or postgresql:// (a +driver suffix is allowed)"
+# An AWS account id is exactly 12 digits. fullmatch: no extra characters, no trailing newline.
+ACCOUNT_ID = re.compile(r"[0-9]{12}")
+
+
+def is_account_id(value: str) -> bool:
+    return ACCOUNT_ID.fullmatch(value) is not None
 
 
 class SettingsError(RuntimeError):
@@ -50,6 +57,9 @@ class Settings(BaseSettings):
     test_database_url: SecretStr | None = None
     # Plot photos (S3). Optional: the service starts without them, and the photo endpoints answer 503 until set.
     aws_s3_bucket: str | None = None
+    # The bucket's AWS account id. S3 refuses the bucket if another account owns it (ExpectedBucketOwner).
+    # A value that is not 12 digits is logged at startup and treated as missing.
+    aws_s3_bucket_owner: str | None = None
     aws_region: str | None = None
 
     @field_validator("database_url")

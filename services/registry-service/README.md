@@ -95,16 +95,17 @@ One photo per plot, stored in an S3 bucket. The database keeps the S3 key and th
 Settings (optional; see `.env.example`):
 
 - `AWS_S3_BUCKET`: the bucket. Without it the photo endpoints answer 503 and the rest of the API works.
+- `AWS_S3_BUCKET_OWNER`: the bucket owner's 12-digit AWS account id. S3 refuses the bucket if another account owns it (`ExpectedBucketOwner`). A value that is not 12 digits is logged at startup and treated as missing.
 - `AWS_REGION`: the bucket's region.
 
 No credentials go in the settings. boto3 uses the EC2 instance role, or the standard AWS config on a laptop. The role needs `s3:PutObject` and `s3:GetObject` on the bucket.
 
 | Method and path | Success | Errors |
 |---|---|---|
-| `POST /v1/plots/{plot_id}/photo` (multipart field `file`) | 201 `{"plot_id", "key", "content_type"}` | 404 unknown plot; 422 empty, over 5 MB, not JPEG/PNG/WEBP, or declared type differs from the content; 503 S3 or bucket problem |
-| `GET /v1/plots/{plot_id}/photo` | 200 the image, `Content-Type` as stored, `X-Content-Type-Options: nosniff` | 404 unknown plot, no photo, or no S3 object; 503 S3 or bucket problem |
+| `POST /v1/plots/{plot_id}/photo` (multipart field `file`) | 201 `{"plot_id", "key", "content_type"}` | 404 unknown plot; 422 empty, over 5 MB, not JPEG/PNG/WEBP, or declared type differs from the content; 503 S3, bucket or owner setting problem |
+| `GET /v1/plots/{plot_id}/photo` | 200 the image, `Content-Type` as stored, `X-Content-Type-Options: nosniff` | 404 unknown plot, no photo, or no S3 object; 503 S3, bucket or owner setting problem |
 
-The type is found from the bytes (JPEG, PNG or WEBP), not from the file name or header. A second upload replaces the first. The S3 key is `{farm_id}/{plot_id}/photo`.
+The type is found from the bytes (JPEG, PNG or WEBP), not from the file name or header. A second upload replaces the first. The S3 key is `{farm_id}/{plot_id}/photo`. The plot id must be a UUID (anything else is a 422). Logs hold only the plot id and the exception class name, never request values.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/plots/c8f3d1b0-4d2e-5a1b-8b22-1d6e3f702002/photo \
@@ -126,6 +127,7 @@ curl -o north-block.jpg http://127.0.0.1:8000/v1/plots/c8f3d1b0-4d2e-5a1b-8b22-1
 
    ```ini
    Environment=AWS_S3_BUCKET=<bucket name>
+   Environment=AWS_S3_BUCKET_OWNER=<12-digit account id of the bucket owner>
    Environment=AWS_REGION=<bucket region>
    ```
 
