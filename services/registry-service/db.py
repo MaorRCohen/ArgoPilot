@@ -3,7 +3,7 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Connection, Engine, create_engine, event, text
+from sqlalchemy import Connection, Engine, create_engine, event, inspect, text
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError, TimeoutError as PoolTimeoutError
 from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
@@ -242,3 +242,29 @@ def update_plot_fields(conn: Connection, plot_id: str, changes: dict) -> None:
 
 def delete_plot(conn: Connection, plot_id: str) -> None:
     _write(conn, "DELETE FROM plots WHERE id = :id", {"id": plot_id})
+
+
+def has_plot_photos_table(conn: Connection) -> bool:
+    # Startup check: the table comes from migrations/001_plot_photos.sql, the API never creates it.
+    return inspect(conn).has_table("plot_photos")
+
+
+def get_plot_photo(conn: Connection, plot_id: str) -> dict | None:
+    row = conn.execute(
+        text("SELECT key, content_type FROM plot_photos WHERE plot_id = :plot_id"),
+        {"plot_id": plot_id},
+    ).mappings().first()
+    return normalize_row(row) if row else None
+
+
+def upsert_plot_photo(conn: Connection, plot_id: str, key: str, content_type: str) -> None:
+    # One row per plot: a second upload replaces the first. Same SQL on SQLite and PostgreSQL.
+    _write(
+        conn,
+        """
+        INSERT INTO plot_photos (plot_id, key, content_type)
+        VALUES (:plot_id, :key, :content_type)
+        ON CONFLICT (plot_id) DO UPDATE SET key = excluded.key, content_type = excluded.content_type
+        """,
+        {"plot_id": plot_id, "key": key, "content_type": content_type},
+    )

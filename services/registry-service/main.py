@@ -1,12 +1,21 @@
+import logging
 from collections.abc import Callable, Iterator
+from contextlib import asynccontextmanager
 from datetime import date, datetime
 import math
 import uuid
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI
+import boto3
+from botocore.client import BaseClient
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
+from fastapi import Depends, FastAPI, Response, UploadFile
 from sqlalchemy import Connection
+from sqlalchemy.exc import DBAPIError
 from timezonefinder import TimezoneFinder
+
+from config import get_settings
 
 from db import (
     ForeignKeyViolation,
@@ -26,7 +35,10 @@ from db import (
     update_farm_name,
     SchemaMissing,
     check_farms_table,
+    get_plot_photo,
+    has_plot_photos_table,
     update_plot_fields,
+    upsert_plot_photo,
 )
 from errors import RETRY_AFTER_SECONDS, ApiError, register_error_handlers
 from models import (
@@ -42,10 +54,32 @@ from models import (
     PlotArea,
     PlotCreate,
     PlotPatch,
+    PlotPhoto,
     Soil,
 )
 
-app = FastAPI(title="AgroPilot registry-service", version="0.1.0")
+logger = logging.getLogger(__name__)
+
+
+def check_plot_photos_table() -> None:
+    # Startup check. Logged, never fatal: the service still starts, so /health can report the state.
+    try:
+        with get_connection() as conn:
+            exists = has_plot_photos_table(conn)
+    except DBAPIError:
+        logger.warning("could not check plot_photos table at startup: database unavailable")
+        return
+    if not exists:
+        logger.error("plot_photos table missing - run migrations/001_plot_photos.sql")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    check_plot_photos_table()
+    yield
+
+
+app = FastAPI(title="AgroPilot registry-service", version="0.1.0", lifespan=lifespan)
 register_error_handlers(app)
 
 timezone_finder = TimezoneFinder()
@@ -101,6 +135,74 @@ def write_plot(write: Callable[..., None], *args) -> None:
         raise ApiError(409, "CONFLICT", PLOT_NAME_CONFLICT)
     except ForeignKeyViolation:
         raise ApiError(422, "VALIDATION", "referenced id: not found")
+
+
+# Plot photos: the limits, the accepted types and the S3 settings live here, in one place.
+MAX_PHOTO_BYTES = 5 * 1024 * 1024
+JPEG_MAGIC = b"\xff\xd8\xff"
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+RETRY_HEADERS = {"Retry-After": str(RETRY_AFTER_SECONDS)}
+# Timeouts: a slow S3 answers 503 in seconds instead of holding the request for minutes.
+S3_CONFIG = Config(connect_timeout=5, read_timeout=10)
+
+
+def get_s3() -> BaseClient:
+    # Built per request, on first use (not at import), so the service starts without AWS settings.
+    return boto3.client("s3", region_name=get_settings().aws_region, config=S3_CONFIG)
+
+
+def sniff_photo_type(data: bytes) -> str | None:
+    # The bytes decide the type, not the Content-Type header: a client can send any header (OWASP).
+    if data.startswith(JPEG_MAGIC):
+        return "image/jpeg"
+    if data.startswith(PNG_MAGIC):
+        return "image/png"
+    if data[0:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def check_photo(data: bytes, declared: str | None) -> str:
+    if not data:
+        raise ApiError(422, "VALIDATION", "file: empty")
+    if len(data) > MAX_PHOTO_BYTES:
+        raise ApiError(422, "VALIDATION", "file: larger than 5 MB")
+    detected = sniff_photo_type(data)
+    if detected is None:
+        raise ApiError(422, "VALIDATION", "file: content is not JPEG, PNG or WEBP")
+    if declared != detected:
+        raise ApiError(422, "VALIDATION", "file: declared type does not match content")
+    return detected
+
+
+def photo_bucket() -> str:
+    bucket = get_settings().aws_s3_bucket
+    if not bucket:
+        raise ApiError(503, "UNAVAILABLE", "Photo storage is not configured", RETRY_HEADERS)
+    return bucket
+
+
+def photo_unavailable(exc: BotoCoreError | ClientError, action: str, key: str) -> ApiError:
+    logger.error("S3 %s failed for %s", action, key, exc_info=exc)
+    return ApiError(503, "UNAVAILABLE", "Photo storage unavailable", RETRY_HEADERS)
+
+
+def put_photo(s3: BaseClient, bucket: str, key: str, data: bytes, content_type: str) -> None:
+    try:
+        s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
+    except (BotoCoreError, ClientError) as exc:
+        raise photo_unavailable(exc, "put_object", key)
+
+
+def fetch_photo(s3: BaseClient, bucket: str, key: str) -> bytes:
+    try:
+        return s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "NoSuchKey":
+            raise ApiError(404, "NOT_FOUND", "Photo not found")
+        raise photo_unavailable(exc, "get_object", key)
+    except BotoCoreError as exc:
+        raise photo_unavailable(exc, "get_object", key)
 
 
 @app.get("/health")
@@ -226,6 +328,39 @@ def update_plot(plot_id: str, body: PlotPatch, conn: Connection = Depends(get_db
 def remove_plot(plot_id: str, conn: Connection = Depends(get_db)) -> None:
     get_plot_or_404(conn, plot_id)
     delete_plot(conn, plot_id)
+
+
+@app.get("/v1/plots/{plot_id}/photo")
+def read_plot_photo(
+    plot_id: str, conn: Connection = Depends(get_db), s3: BaseClient = Depends(get_s3)
+) -> Response:
+    get_plot_or_404(conn, plot_id)
+    photo = get_plot_photo(conn, plot_id)
+    if photo is None:
+        raise ApiError(404, "NOT_FOUND", "Photo not found")
+    data = fetch_photo(s3, photo_bucket(), photo["key"])
+    # The type is the one stored in our DB, never the one S3 returns. nosniff stops browsers guessing.
+    return Response(
+        content=data, media_type=photo["content_type"], headers={"X-Content-Type-Options": "nosniff"}
+    )
+
+
+@app.post("/v1/plots/{plot_id}/photo", status_code=201, response_model=PlotPhoto)
+def upload_plot_photo(
+    plot_id: str,
+    file: UploadFile,
+    conn: Connection = Depends(get_db),
+    s3: BaseClient = Depends(get_s3),
+) -> dict:
+    plot = get_plot_or_404(conn, plot_id)
+    # One byte past the limit is enough to know the file is too large; never read more than that.
+    data = file.file.read(MAX_PHOTO_BYTES + 1)
+    content_type = check_photo(data, file.content_type)
+    bucket = photo_bucket()
+    key = f"{plot['farm_id']}/{plot_id}/photo"
+    put_photo(s3, bucket, key, data, content_type)  # S3 first: if it fails, the DB row is not touched
+    upsert_plot_photo(conn, plot_id, key, content_type)
+    return {"plot_id": plot_id, "key": key, "content_type": content_type}
 
 
 @app.get("/v1/crops", response_model=list[Crop])

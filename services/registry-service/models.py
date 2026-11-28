@@ -40,6 +40,12 @@ class Plot(BaseModel):
     lon: float
 
 
+class PlotPhoto(BaseModel):
+    plot_id: str
+    key: str
+    content_type: str
+
+
 class PlotArea(BaseModel):
     plot_id: str
     area_m2: float = Field(ge=0)

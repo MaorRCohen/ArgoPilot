@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     database_owner_url: SecretStr | None = None
     # Only the Postgres test run uses it. Its name must end with _test (tests/pg_guard.py checks that).
     test_database_url: SecretStr | None = None
+    # Plot photos (S3). Optional: the service starts without them, and the photo endpoints answer 503 until set.
+    aws_s3_bucket: str | None = None
+    aws_region: str | None = None
 
     @field_validator("database_url")
     @classmethod

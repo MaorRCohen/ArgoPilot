@@ -68,7 +68,7 @@ docker run -d --name registry-postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES
 
 To run the tests on this container, put `TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/registry_test` in `.env` and follow [Run the tests on PostgreSQL](#run-the-tests-on-postgresql).
 
-The tests create their own tables with `setup_db.py`'s code. The API never creates or changes tables: only `setup_db.py` does.
+The tests create their own tables with `setup_db.py`'s code. The API never creates or changes tables: only `setup_db.py` and `seed_registry.sh` do, by running `migrations/*.sql`.
 
 To run the k6 load test (see Performance) against PostgreSQL, create a separate database whose name does not contain `test`, and seed it with the same command:
 
@@ -88,12 +88,58 @@ The tests can also run on PostgreSQL. Before every test they wipe the database's
 
 Before any database is touched, the run stops with exit code 2 if the database name does not end with `_test`, or if it is the same database as `DATABASE_URL`. The message never shows a URL. The wipe also refuses any host other than `localhost` or `127.0.0.1`. To skip PostgreSQL for one run without editing `.env`: `TEST_DATABASE_URL= uv run pytest`.
 
+## Plot photos (S3)
+
+One photo per plot, stored in an S3 bucket. The database keeps the S3 key and the content type, in table `plot_photos` (from [`migrations/001_plot_photos.sql`](migrations/001_plot_photos.sql)). The image bytes stay in S3.
+
+Settings (optional; see `.env.example`):
+
+- `AWS_S3_BUCKET`: the bucket. Without it the photo endpoints answer 503 and the rest of the API works.
+- `AWS_REGION`: the bucket's region.
+
+No credentials go in the settings. boto3 uses the EC2 instance role, or the standard AWS config on a laptop. The role needs `s3:PutObject` and `s3:GetObject` on the bucket.
+
+| Method and path | Success | Errors |
+|---|---|---|
+| `POST /v1/plots/{plot_id}/photo` (multipart field `file`) | 201 `{"plot_id", "key", "content_type"}` | 404 unknown plot; 422 empty, over 5 MB, not JPEG/PNG/WEBP, or declared type differs from the content; 503 S3 or bucket problem |
+| `GET /v1/plots/{plot_id}/photo` | 200 the image, `Content-Type` as stored, `X-Content-Type-Options: nosniff` | 404 unknown plot, no photo, or no S3 object; 503 S3 or bucket problem |
+
+The type is found from the bytes (JPEG, PNG or WEBP), not from the file name or header. A second upload replaces the first. The S3 key is `{farm_id}/{plot_id}/photo`.
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/plots/c8f3d1b0-4d2e-5a1b-8b22-1d6e3f702002/photo \
+  -F "file=@north-block.jpg;type=image/jpeg"
+# 201 {"plot_id":"c8f3d1b0-4d2e-5a1b-8b22-1d6e3f702002","key":"b7e2c0a0-3c1d-4f0a-9a11-0c5d2e6f1001/c8f3d1b0-4d2e-5a1b-8b22-1d6e3f702002/photo","content_type":"image/jpeg"}
+
+curl -o north-block.jpg http://127.0.0.1:8000/v1/plots/c8f3d1b0-4d2e-5a1b-8b22-1d6e3f702002/photo
+```
+
+**One-time step on the EC2 host** (the `plot_photos` table is added to the real `registry.db` by hand; `seed_registry.sh` only builds fresh files, and PostgreSQL gets the table from `setup_db.py`):
+
+1. From `services/registry-service`, create the table. Safe to run again.
+
+   ```bash
+   sqlite3 registry.db < migrations/001_plot_photos.sql
+   ```
+
+2. Add the two settings to the `[Service]` section of `/etc/systemd/system/registry.service.d/env.conf`:
+
+   ```ini
+   Environment=AWS_S3_BUCKET=<bucket name>
+   Environment=AWS_REGION=<bucket region>
+   ```
+
+3. Reload and restart: `sudo systemctl daemon-reload && sudo systemctl restart registry`.
+
+If the table is missing, the service still starts and logs `plot_photos table missing - run migrations/001_plot_photos.sql`.
+
 ## Endpoints
 
 | Resource | Methods and paths |
 |---|---|
 | Farms | `GET, POST /v1/farms`; `GET, PATCH, DELETE /v1/farms/{farm_id}` |
 | Plots | `GET, POST /v1/plots` (filter with `GET /v1/plots?farm_id=`); `GET, PATCH, DELETE /v1/plots/{plot_id}` |
+| Plot photos | `GET, POST /v1/plots/{plot_id}/photo` (see [Plot photos](#plot-photos-s3)) |
 | Crops, soils, emitters | `GET /v1/crops`, `/v1/soils`, `/v1/emitters`; `GET` each `/{id}` |
 | Health | `GET /health` |
 

@@ -67,6 +67,7 @@ def template_db(tmp_path_factory) -> Path:
     # so its "rm -f registry.db" can never touch the real database.
     work_dir = tmp_path_factory.mktemp("seed")
     shutil.copy(SEED_SCRIPT, work_dir / "seed_registry.sh")
+    shutil.copytree(SERVICE_DIR / "migrations", work_dir / "migrations")  # the seed script applies them
     subprocess.run(["bash", "seed_registry.sh"], cwd=work_dir, check=True)
     return work_dir / "registry.db"
 

@@ -1037,3 +1037,47 @@ Format per entry: AI suggested / I decided / Why / Research (optional).
 - **I decided:** the same. No "Watering starts at" line, no tick on the tank, one leaf-green colour with one legend item. The planner API and engine are unchanged.
 - **Why:** the gauge compared the post-watering level with the morning trigger, so a correct irrigation looked wrong ("4% used. Watering starts at 30%." after a 30 mm irrigation). The trigger tests the morning depletion (entry 111), which the API does not return yet (Backlog).
 - **Research:** `services/planner-service/engine.py:226` (start depletion), `:241-242` (trigger on the morning value), `:267` (end level).
+
+## Plot photos (feat/plot-photo)
+
+### 163. Photo in its own table, not columns on plots
+- **AI suggested:** a `plot_photos` table with `plot_id` as primary key and `ON DELETE CASCADE`, not photo columns on `plots`.
+- **I decided:** the same.
+- **Why:** the Plot JSON and the `plots` table stay as they are, so no existing client or load test changes. A plot has at most one photo, and the primary key enforces it. Deleting a plot deletes its photo row.
+- **Research:** task spec (steps 1 and 3). Cascade covered by `test_deleting_the_plot_deletes_its_photo_row`.
+
+### 164. Migration file run by the owner; grants only on PostgreSQL
+- **AI suggested:** one SQL file in `migrations/`, run by the owner. Grants only in the PostgreSQL setup: `ALTER DEFAULT PRIVILEGES FOR ROLE registry_owner` plus an explicit `GRANT` on `plot_photos` for databases that already exist. A startup check logs a missing table.
+- **I decided:** the same, plus two things. `seed_registry.sh` also applies `migrations/*.sql`, which changes the seed script that `CLAUDE.md` says not to change; the schema part is untouched. And the startup check logs an error and keeps the service running.
+- **Why:** SQLite has no `GRANT`, so the file runs on both databases with no grant in it. `registry_app` keeps the least privilege from P2: its rights come only from the owner's setup, never from the API. The startup check turns a forgotten migration into a clear log line instead of a 500 on the first upload.
+- **Research:** PostgreSQL docs for `ALTER DEFAULT PRIVILEGES`: it applies only to objects the named role creates later, so the existing table needs its own `GRANT`. Checked by `test_app_role_can_write_plot_photos` on the PostgreSQL run.
+
+### 165. Image type from the bytes, stored and served with nosniff
+- **AI suggested:** detect the type from magic bytes (JPEG `FF D8 FF`, PNG signature, WEBP `RIFF` at 0 and `WEBP` at 8), store the detected type, and send `X-Content-Type-Options: nosniff` on GET.
+- **I decided:** the same. A declared `Content-Type` that differs from the detected type is a 422.
+- **Why:** the client sends the `Content-Type` header and can put anything in it. Storing and serving the detected type means a file is never served as a type it is not. `nosniff` stops browsers from guessing a different type.
+- **Research:** OWASP File Upload Cheat Sheet: validate the file content, not the header.
+
+### 166. Tests in a new file, with a botocore Stubber and no AWS
+- **AI suggested:** `tests/test_plot_photo.py`; the S3 client wrapped in a botocore `Stubber` with dummy credentials; no real AWS and no network.
+- **I decided:** the same. Written with the feature, not after it.
+- **Why:** the CI gate is 100% coverage, and the photo endpoints must be covered for the check to stay green. `Stubber` checks the exact S3 call (bucket, key, body, content type) and adds no dependency, since botocore comes with boto3. A test that expects a 422 fails if S3 is called, because the Stubber has no response queued. `NoCredentialsError` comes from a small fake, since `Stubber` only returns canned responses. The PostgreSQL-only grant code is covered on the SQLite run by a fake connection; the real privilege is checked on the PostgreSQL run.
+- **Research:** botocore `Stubber` documentation.
+
+### 167. S3 first, then the database; a missing bucket is 503, not a crash
+- **AI suggested:** write the object to S3 first, then upsert the row. With no `AWS_S3_BUCKET`, answer 503 instead of refusing to start.
+- **I decided:** the same, and the missing-bucket 503 also sends `Retry-After: 30`, like every 503 in the registry.
+- **Why:** if the S3 write fails after the DB write, the row would point at a photo that does not exist. S3 first means a failed upload leaves the old photo and row untouched. CI and the EC2 host have no bucket yet, so the service has to start without one.
+- **Research:** task spec (step 2).
+
+### 168. S3 client timeouts
+- **AI suggested:** none; not in the task.
+- **I decided:** connect timeout 5 s and read timeout 10 s on the S3 client.
+- **Why:** a slow S3 call could otherwise hold a request for a minute or more, far past the 100 ms target for the other endpoints. With a timeout, the request fails fast as a 503.
+- **Research:** botocore `Config` (`connect_timeout`, `read_timeout`).
+
+### 169. python-multipart added because FastAPI needs it for UploadFile
+- **AI suggested:** the upload is a `multipart/form-data` field `file`, which FastAPI reads as `UploadFile`.
+- **I decided:** add `python-multipart` with `uv add` (pyproject.toml and uv.lock updated), instead of parsing the upload by hand.
+- **Why:** FastAPI raises `Form data requires "python-multipart" to be installed` when the route is registered, so the app would not start without it. A maintained parser is safer than hand-written multipart parsing.
+- **Research:** FastAPI request files documentation. Checked locally: registering a route with `UploadFile` failed before the install and works after it.

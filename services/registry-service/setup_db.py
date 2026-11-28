@@ -8,6 +8,7 @@ and everything happens in one transaction: if anything fails, nothing is saved.
 """
 
 import sys
+from pathlib import Path
 
 from sqlalchemy import (
     REAL,
@@ -125,6 +126,27 @@ SEED_ROWS: dict[str, list[dict]] = {
 }
 
 
+MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+
+
+def apply_migrations(conn: Connection) -> None:
+    # Every migrations/*.sql in name order. Each file is idempotent (IF NOT EXISTS).
+    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        conn.exec_driver_sql(path.read_text(encoding="utf-8"))
+
+
+def grant_app_access(conn: Connection) -> None:
+    # PostgreSQL only: SQLite has no GRANT. Tables created later get the privileges by default;
+    # plot_photos is granted explicitly for databases that already exist.
+    if conn.dialect.name != "postgresql":
+        return
+    conn.exec_driver_sql(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE registry_owner IN SCHEMA public "
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO registry_app"
+    )
+    conn.exec_driver_sql("GRANT SELECT, INSERT, UPDATE, DELETE ON plot_photos TO registry_app")
+
+
 def make_engine(url: str) -> Engine:
     engine = create_engine(url)
     if engine.dialect.name == "sqlite":
@@ -152,6 +174,8 @@ def run_setup(url: str) -> dict[str, int]:
     try:
         with engine.begin() as conn:
             metadata.create_all(conn, checkfirst=True)
+            apply_migrations(conn)
+            grant_app_access(conn)
             for name, rows in SEED_ROWS.items():
                 _insert_missing(conn, metadata.tables[name], rows)
             return {

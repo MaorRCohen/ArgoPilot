@@ -17,7 +17,7 @@ Service: services/registry-service (FastAPI, main.py at service root, run: `uv r
 - PostgreSQL is created and seeded only by `setup_db.py` (`uv run python setup_db.py`, connects with `DATABASE_OWNER_URL` as `registry_owner`). Never run it against the real DB from an agent.
 - Settings are read only in `config.py` at startup: a real env var first, then `.env` next to `config.py`. `DATABASE_URL` is required; optional `DATABASE_OWNER_URL` is never used by the API. Both are `SecretStr`; `db.py` reads `DATABASE_URL`, `setup_db.py` reads `DATABASE_OWNER_URL`, and the tests read `TEST_DATABASE_URL`. Settings load on first use (`get_settings()`), not at import, so conftest can read the real values before it overrides `DATABASE_URL`. Only `.env.example` is committed. Startup logs the scheme only (`sqlite` / `postgresql`), never the URL or password (logging added at the owner's request).
 - Every SQLite connection runs `PRAGMA foreign_keys = ON`.
-- Schema comes from `seed_registry.sh` (do not change it). Reset data: `bash seed_registry.sh`.
+- Schema comes from `seed_registry.sh`, which then applies `migrations/*.sql` in name order (decision: judgment log 164). Reset data: `bash seed_registry.sh`.
 - `registry.db` is git-ignored.
 - Few files: main.py, db.py, models.py, errors.py, config.py (+ tests), setup_db.py (P2 setup and seed command).
 - Farm ids are server-generated with `str(uuid.uuid4())`; the client sends only `name`.
