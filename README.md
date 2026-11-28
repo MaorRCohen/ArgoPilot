@@ -24,3 +24,7 @@ Feature ideas outside the task spec. Per the instructor's rule, every such idea 
 - Add numeric constraints (ge/gt) to the Plot response model, matching PlotArea and the registry rule (docs/Swagger only — input is already validated by FR-1.3).
 - Planner API: return morning depletion so the gauge can show before/after watering.
 - **Daily irrigation mode (grower's choice).** Today the planner waits until 30% of the soil water is used, then refills it in one long run (for example in November: one 7 h run, then about a week with no water). Many drip growers prefer "daily replacement": every day, give back what the crop used, so runs are short and the soil stays near full. Both follow FAO-56. Needs: a per-plot setting and a second scheduling rule in the planner engine; the water balance stays the same.
+- **Upload a plot photo from the frontend.** The registry API has `POST /v1/plots/{id}/photo` and `GET /v1/plots/{id}/photo`; the frontend has no upload control yet.
+- **Delete the S3 object when its plot is deleted.** Deleting a plot removes its photo row (cascade) but leaves the image in the bucket.
+- **Re-encode uploaded images** to strip anything malicious. The magic-byte check proves the file type, not that the file is clean.
+- **Migration tracking (Alembic or a `schema_migrations` table).** `migrations/*.sql` are idempotent and run by hand or by the setup and seed commands; nothing records which ones ran.

@@ -106,5 +106,11 @@ INSERT INTO plots (
   );
 SQL
 
+# Apply the migrations in name order, from the migrations folder next to this script.
+migrations_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/migrations"
+for migration in "$migrations_dir"/*.sql; do
+  sqlite3 "$db" < "$migration"
+done
+
 echo "Wrote $db"
 echo "  2 farms, 4 plots, 2 crops, 3 soils, 4 emitters"

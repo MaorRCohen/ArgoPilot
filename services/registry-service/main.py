@@ -1,12 +1,21 @@
+import logging
 from collections.abc import Callable, Iterator
+from contextlib import asynccontextmanager
 from datetime import date, datetime
 import math
 import uuid
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI
+import boto3
+from botocore.client import BaseClient
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
+from fastapi import Depends, FastAPI, Response, UploadFile
 from sqlalchemy import Connection
+from sqlalchemy.exc import DBAPIError
 from timezonefinder import TimezoneFinder
+
+from config import get_settings, is_account_id
 
 from db import (
     ForeignKeyViolation,
@@ -26,7 +35,10 @@ from db import (
     update_farm_name,
     SchemaMissing,
     check_farms_table,
+    get_plot_photo,
+    has_plot_photos_table,
     update_plot_fields,
+    upsert_plot_photo,
 )
 from errors import RETRY_AFTER_SECONDS, ApiError, register_error_handlers
 from models import (
@@ -42,10 +54,42 @@ from models import (
     PlotArea,
     PlotCreate,
     PlotPatch,
+    PlotPhoto,
     Soil,
 )
 
-app = FastAPI(title="AgroPilot registry-service", version="0.1.0")
+logger = logging.getLogger(__name__)
+
+
+def check_plot_photos_table() -> None:
+    # Startup check. Logged, never fatal: the service still starts, so /health can report the state.
+    try:
+        with get_connection() as conn:
+            exists = has_plot_photos_table(conn)
+    except DBAPIError:
+        logger.warning("could not check plot_photos table at startup: database unavailable")
+        return
+    if not exists:
+        logger.error("plot_photos table missing - run migrations/001_plot_photos.sql")
+
+
+def check_bucket_owner_setting() -> None:
+    # A malformed owner is logged, never printed, and treated as missing: the service still starts.
+    owner = get_settings().aws_s3_bucket_owner
+    if owner and not is_account_id(owner):
+        logger.error(
+            "AWS_S3_BUCKET_OWNER must be exactly 12 digits; photo endpoints answer 503 until it is fixed"
+        )
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    check_plot_photos_table()
+    check_bucket_owner_setting()
+    yield
+
+
+app = FastAPI(title="AgroPilot registry-service", version="0.1.0", lifespan=lifespan)
 register_error_handlers(app)
 
 timezone_finder = TimezoneFinder()
@@ -101,6 +145,92 @@ def write_plot(write: Callable[..., None], *args) -> None:
         raise ApiError(409, "CONFLICT", PLOT_NAME_CONFLICT)
     except ForeignKeyViolation:
         raise ApiError(422, "VALIDATION", "referenced id: not found")
+
+
+# Plot photos: the limits, the accepted types and the S3 settings live here, in one place.
+MAX_PHOTO_BYTES = 5 * 1024 * 1024
+JPEG_MAGIC = b"\xff\xd8\xff"
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+RETRY_HEADERS = {"Retry-After": str(RETRY_AFTER_SECONDS)}
+# Timeouts: a slow S3 answers 503 in seconds instead of holding the request for minutes.
+S3_CONFIG = Config(connect_timeout=5, read_timeout=10)
+
+
+def get_s3() -> BaseClient:
+    # Built per request, on first use (not at import), so the service starts without AWS settings.
+    return boto3.client("s3", region_name=get_settings().aws_region, config=S3_CONFIG)
+
+
+def sniff_photo_type(data: bytes) -> str | None:
+    # The bytes decide the type, not the Content-Type header: a client can send any header (OWASP).
+    if data.startswith(JPEG_MAGIC):
+        return "image/jpeg"
+    if data.startswith(PNG_MAGIC):
+        return "image/png"
+    if data[0:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def check_photo(data: bytes, declared: str | None) -> str:
+    if not data:
+        raise ApiError(422, "VALIDATION", "file: empty")
+    if len(data) > MAX_PHOTO_BYTES:
+        raise ApiError(422, "VALIDATION", "file: larger than 5 MB")
+    detected = sniff_photo_type(data)
+    if detected is None:
+        raise ApiError(422, "VALIDATION", "file: content is not JPEG, PNG or WEBP")
+    if declared != detected:
+        raise ApiError(422, "VALIDATION", "file: declared type does not match content")
+    return detected
+
+
+def bucket_owner() -> str | None:
+    owner = get_settings().aws_s3_bucket_owner
+    return owner if owner and is_account_id(owner) else None
+
+
+def s3_scope() -> dict[str, str]:
+    # The one place S3 calls get their bucket. ExpectedBucketOwner makes S3 refuse a bucket that
+    # someone else created with the same name: bucket names are global.
+    bucket = get_settings().aws_s3_bucket
+    owner = bucket_owner()
+    if not bucket or owner is None:
+        raise ApiError(503, "UNAVAILABLE", "Photo storage is not configured", RETRY_HEADERS)
+    return {"Bucket": bucket, "ExpectedBucketOwner": owner}
+
+
+def photo_unavailable(exc: BotoCoreError | ClientError, action: str, plot_id: str) -> ApiError:
+    # Only validated values and the exception class reach the log. Never the request, and never the
+    # exception message, which can repeat request data.
+    if isinstance(exc, ClientError) and exc.response["Error"]["Code"] == "AccessDenied":
+        logger.error(
+            "S3 %s refused with AccessDenied for plot %s: bucket owner mismatch or missing permission (%s)",
+            action, plot_id, type(exc).__name__,
+        )
+    else:
+        logger.error("S3 %s failed for plot %s (%s)", action, plot_id, type(exc).__name__)
+    return ApiError(503, "UNAVAILABLE", "Photo storage unavailable", RETRY_HEADERS)
+
+
+def put_photo(
+    s3: BaseClient, scope: dict[str, str], plot_id: str, key: str, data: bytes, content_type: str
+) -> None:
+    try:
+        s3.put_object(**scope, Key=key, Body=data, ContentType=content_type)
+    except (BotoCoreError, ClientError) as exc:
+        raise photo_unavailable(exc, "put_object", plot_id)
+
+
+def fetch_photo(s3: BaseClient, scope: dict[str, str], plot_id: str, key: str) -> bytes:
+    try:
+        return s3.get_object(**scope, Key=key)["Body"].read()
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "NoSuchKey":
+            raise ApiError(404, "NOT_FOUND", "Photo not found")
+        raise photo_unavailable(exc, "get_object", plot_id)
+    except BotoCoreError as exc:
+        raise photo_unavailable(exc, "get_object", plot_id)
 
 
 @app.get("/health")
@@ -226,6 +356,42 @@ def update_plot(plot_id: str, body: PlotPatch, conn: Connection = Depends(get_db
 def remove_plot(plot_id: str, conn: Connection = Depends(get_db)) -> None:
     get_plot_or_404(conn, plot_id)
     delete_plot(conn, plot_id)
+
+
+@app.get("/v1/plots/{plot_id}/photo")
+def read_plot_photo(
+    plot_id: uuid.UUID, conn: Connection = Depends(get_db), s3: BaseClient = Depends(get_s3)
+) -> Response:
+    # plot_id is a UUID, so FastAPI rejects anything else with a 422 before this code runs.
+    pid = str(plot_id)
+    get_plot_or_404(conn, pid)
+    photo = get_plot_photo(conn, pid)
+    if photo is None:
+        raise ApiError(404, "NOT_FOUND", "Photo not found")
+    data = fetch_photo(s3, s3_scope(), pid, photo["key"])
+    # The type is the one stored in our DB, never the one S3 returns. nosniff stops browsers guessing.
+    return Response(
+        content=data, media_type=photo["content_type"], headers={"X-Content-Type-Options": "nosniff"}
+    )
+
+
+@app.post("/v1/plots/{plot_id}/photo", status_code=201, response_model=PlotPhoto)
+def upload_plot_photo(
+    plot_id: uuid.UUID,
+    file: UploadFile,
+    conn: Connection = Depends(get_db),
+    s3: BaseClient = Depends(get_s3),
+) -> dict:
+    pid = str(plot_id)  # a UUID: FastAPI rejects anything else with a 422 first
+    plot = get_plot_or_404(conn, pid)
+    # One byte past the limit is enough to know the file is too large; never read more than that.
+    data = file.file.read(MAX_PHOTO_BYTES + 1)
+    content_type = check_photo(data, file.content_type)
+    scope = s3_scope()
+    key = f"{plot['farm_id']}/{pid}/photo"
+    put_photo(s3, scope, pid, key, data, content_type)  # S3 first: if it fails, the DB row is not touched
+    upsert_plot_photo(conn, pid, key, content_type)
+    return {"plot_id": pid, "key": key, "content_type": content_type}
 
 
 @app.get("/v1/crops", response_model=list[Crop])

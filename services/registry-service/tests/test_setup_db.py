@@ -54,13 +54,14 @@ def total_rows(path: Path) -> int:
     return sum(len(rows) for _columns, rows in snapshot(path).values())
 
 
-def test_empty_database_gets_five_tables_and_fifteen_rows(tmp_path):
+def test_empty_database_gets_six_tables_and_fifteen_rows(tmp_path):
     db = tmp_path / "empty.db"
 
     result = run_cli(tmp_path, f"sqlite:///{db}")
 
     assert result.returncode == 0, result.stderr
-    assert table_names(db) == sorted(TABLES)
+    # plot_photos comes from migrations/001_plot_photos.sql and holds no seed rows.
+    assert table_names(db) == sorted([*TABLES, "plot_photos"])
     assert total_rows(db) == 15
     assert "total: 15" in result.stdout
 
